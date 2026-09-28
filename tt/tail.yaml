@@ -1,0 +1,435 @@
+
+font:
+  # --- alarm popup + night clock (unchanged)
+  - file: "gfonts://Roboto@300"
+    id: alarm_time
+    size: 72
+    bpp: 4
+    glyphs: "0123456789:- "
+  - file: "gfonts://Roboto@500"
+    id: alarm_t24
+    size: 24
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
+  - file: "gfonts://Roboto"
+    id: alarm_t18
+    size: 18
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
+  - file: "gfonts://Roboto@700"
+    id: alarm_btn
+    size: 20
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
+  # --- Bæo faces (Syne)
+  # --- Face A + night face (Manrope; BaeoRemote Face A Spec.pdf)
+  - file: "gfonts://Manrope@300"
+    id: mr_num                 # night clock + volume numeral
+    size: 104
+    bpp: 4
+    glyphs: "0123456789:-"
+  - file: "gfonts://Manrope@700"
+    id: mr_clk
+    size: 22
+    bpp: 4
+    glyphs: "0123456789:-"
+  - file: "gfonts://Manrope@300"
+    id: mr_40
+    size: 40
+    bpp: 4
+    glyphs: @@LATIN@@
+  - file: "gfonts://Manrope@700"
+    id: mr_a20
+    size: 20
+    bpp: 4
+    glyphs: @@CAPS@@
+  - file: "gfonts://Manrope@700"
+    id: mr_a14
+    size: 14
+    bpp: 4
+    glyphs: @@CAPS@@
+  - file: "gfonts://Manrope@400"
+    id: mr_20                  # night title, playlist rows, default
+    size: 20
+    bpp: 4
+    glyphs: @@LATIN@@
+  - file: "gfonts://Syne@700"
+    id: hk_22                  # BÆOREMOTE wordmark
+    size: 22
+    bpp: 4
+    glyphs: "BÆOREMT"
+  - file: "gfonts://Syne@700"
+    id: hk_16
+    size: 18
+    bpp: 4
+    glyphs: @@CAPS@@
+  - file: "gfonts://Syne@600"
+    id: hk_12
+    size: 13
+    bpp: 4
+    glyphs: "0123456789/ "
+  - file: "gfonts://Syne@500"
+    id: hk_clock
+    size: 30
+    bpp: 4
+    glyphs: "0123456789:-"
+  - file: "gfonts://Syne@700"
+    id: hk_wm_b
+    size: 29
+    bpp: 4
+    glyphs: "Bæo"
+  - file: "gfonts://Syne@400"
+    id: hk_wm_l
+    size: 29
+    bpp: 4
+    glyphs: "Remot"
+  - file: "gfonts://Syne@400"
+    id: hk_32
+    size: 32
+    bpp: 4
+    glyphs: @@LATIN@@
+  - file: "gfonts://Syne@400"
+    id: hk_40
+    size: 40
+    bpp: 4
+    glyphs: "DiscoHueMOSPFavrtAlbm"
+
+text_sensor:
+@@ALARM_TEXT_SENSORS@@
+  - platform: homeassistant
+    id: media_title
+    entity_id: media_player.club
+    attribute: media_title
+    on_value:
+      then:
+        - lambda: 'id(media_is_tv) = (x == std::string("TV") || x == std::string("TV Audio"));'
+        - script.execute: tv_refresh
+        # back from the TV: put the music artwork back
+        - if:
+            condition:
+              lambda: |-
+                if (id(media_is_tv) || id(art_key).rfind("tv:", 0) != 0) return false;
+                const std::string &pic = id(media_picture).state;
+                if (pic.empty() || pic[0] != '/') return false;
+                size_t p = pic.find("cache=");
+                id(art_key) = p == std::string::npos ? pic : pic.substr(p);
+                return true;
+            then:
+              - online_image.set_url:
+                  id: album_blur
+                  url: !lambda 'return std::string("http://10.0.0.20:8123") + id(media_picture).state;'
+        - if:
+            condition: {lambda: 'return x != id(last_title);'}
+            then:
+              - lambda: 'id(last_title) = x;'
+        - script.execute: update_np
+        - script.execute: apply_awake_brightness
+  - platform: homeassistant
+    id: media_artist
+    entity_id: media_player.club
+    attribute: media_artist
+    on_value:
+      then: [{script.execute: update_np}]
+  - platform: homeassistant
+    id: media_state
+    entity_id: media_player.club
+    on_value:
+      then:
+        - lambda: 'id(media_playing) = (x == std::string("playing"));'
+        - script.execute: update_np
+  # Album art: HA's proxy URL carries a rotating token plus a "cache=" hash of
+  # the artwork; only refetch when that hash changes.
+  - platform: homeassistant
+    id: media_picture
+    entity_id: media_player.club
+    attribute: entity_picture
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: |-
+                if (id(media_is_tv) || x.empty() || x[0] != '/') return false;
+                size_t p = x.find("cache=");
+                std::string k = p == std::string::npos ? x : x.substr(p);
+                if (k == id(art_key)) return false;
+                id(art_key) = k;
+                return true;
+            then:
+              - online_image.set_url:
+                  id: album_blur
+                  url: !lambda 'return std::string("http://10.0.0.20:8123") + x;'
+  # --- the TV session (for when Club is on the TV input), as the Astrion TV card does
+  - platform: homeassistant
+    id: tv_plex_title
+    entity_id: media_player.plex_plex_for_android_tv_tv
+    attribute: media_title
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_plex_series
+    entity_id: media_player.plex_plex_for_android_tv_tv
+    attribute: media_series_title
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_plex_pic
+    entity_id: media_player.plex_plex_for_android_tv_tv
+    attribute: entity_picture
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_plex_state
+    entity_id: media_player.plex_plex_for_android_tv_tv
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_cast_title
+    entity_id: media_player.the_club_tv
+    attribute: media_title
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_cast_app
+    entity_id: media_player.the_club_tv
+    attribute: app_name
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_cast_pic
+    entity_id: media_player.the_club_tv
+    attribute: entity_picture
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_cast_state
+    entity_id: media_player.the_club_tv
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_atv_pic
+    entity_id: media_player.club_android_tv_10_0_0_248_club_tv
+    attribute: entity_picture
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_atv_state
+    entity_id: media_player.club_android_tv_10_0_0_248_club_tv
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  # Playlists page lists, flattened by the HA package rotary_lists.yaml
+  - platform: homeassistant
+    id: rl_favs
+    entity_id: sensor.rotary_lists
+    attribute: fav_names
+    on_value:
+      then:
+        - lambda: |-
+            id(fav_v) = [&] { std::vector<std::string> v; if (x.empty()) return v; size_t s = 0; for (;;) { size_t p = x.find('|', s); v.push_back(x.substr(s, p == std::string::npos ? std::string::npos : p - s)); if (p == std::string::npos) return v; s = p + 1; } }();
+        - if:
+            condition: {lambda: 'return id(current_mode) == 6;'}
+            then: [{script.execute: pl_render}]
+  - platform: homeassistant
+    id: rl_albums
+    entity_id: sensor.rotary_lists
+    attribute: album_names
+    on_value:
+      then:
+        - lambda: |-
+            id(alb_v) = [&] { std::vector<std::string> v; if (x.empty()) return v; size_t s = 0; for (;;) { size_t p = x.find('|', s); v.push_back(x.substr(s, p == std::string::npos ? std::string::npos : p - s)); if (p == std::string::npos) return v; s = p + 1; } }();
+        - if:
+            condition: {lambda: 'return id(current_mode) == 6;'}
+            then: [{script.execute: pl_render}]
+  - platform: homeassistant
+    id: rl_artists
+    entity_id: sensor.rotary_lists
+    attribute: album_artists
+    on_value:
+      then:
+        - lambda: |-
+            id(art_v) = [&] { std::vector<std::string> v; if (x.empty()) return v; size_t s = 0; for (;;) { size_t p = x.find('|', s); v.push_back(x.substr(s, p == std::string::npos ? std::string::npos : p - s)); if (p == std::string::npos) return v; s = p + 1; } }();
+  - platform: homeassistant
+    id: club_group
+    entity_id: media_player.club
+    attribute: group_members
+    on_value:
+      then:
+        - lambda: |-
+            static const char *const e[] = @@ROOM_ENTS_ARR@@;
+            int m = 1;
+            for (int i = 1; i < 5; i++) if (x.find(e[i]) != std::string::npos) m |= 1 << i;
+            id(sp_mask) = m;
+
+lvgl:
+@@TOP_LAYER@@
+  displays:
+    - my_display
+  touchscreens:
+    - touch_screen
+  bg_color: 0x000000
+  text_color: 0xEEF1F7
+  default_font: mr_20
+  theme:
+    button:
+      shadow_width: 0
+    label:
+      text_font: mr_20
+
+  pages:
+    - id: main_page
+      scrollable: false
+      pad_all: 0
+      border_width: 0
+      bg_color: 0x000000
+      scrollbar_mode: "OFF"
+      widgets:
+@@FACES@@
+        # ── PLAYLISTS page
+        - obj:
+            id: grp_pl
+            scrollable: false
+            hidden: true
+            align: CENTER
+            width: 480
+            height: 480
+            radius: 0
+            bg_color: 0x2A2B2F
+            bg_grad_color: 0x0B0B0D
+            bg_grad_dir: VER
+            border_width: 0
+            pad_all: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              - label: {id: pl_head, text: "PLAYLISTS", align: CENTER, y: -150, text_font: hk_16, text_color: 0xD6D8DC, text_letter_space: 5}
+              - button:
+                  align: TOP_MID
+                  y: 16
+                  width: 56
+                  height: 56
+                  radius: 28
+                  bg_color: 0x1B1C1F
+                  border_width: 1
+                  border_color: 0xC9CBCF
+                  border_opa: 30%
+                  on_click: [{script.execute: pl_back}]
+                  widgets:
+                    - label: {id: pl_x, text: "\uF00D", align: CENTER, text_font: montserrat_20, text_color: 0xD6D8DC}
+              - button:
+                  id: pl_lb
+                  align: CENTER
+                  x: -150
+                  y: -16
+                  width: 104
+                  height: 104
+                  radius: 52
+                  bg_opa: 0
+                  border_width: 0
+                  opa: 40%
+                  on_click:
+                    - script.execute: screen_timeout_timer
+                    - lambda: 'id(pl_sel) = (id(pl_sel) + 6) % 7;'
+                    - script.execute: pl_render
+                    - script.execute: page_timeout
+                  widgets:
+                    - image: {src: pl_disc_140, align: CENTER, scale: 0.72}
+                    - image: {id: pl_l_icon, src: icon_alb, align: CENTER, scale: 0.72}
+              - button:
+                  id: pl_rb
+                  align: CENTER
+                  x: 150
+                  y: -16
+                  width: 104
+                  height: 104
+                  radius: 52
+                  bg_opa: 0
+                  border_width: 0
+                  opa: 40%
+                  on_click:
+                    - script.execute: screen_timeout_timer
+                    - lambda: 'id(pl_sel) = (id(pl_sel) + 1) % 7;'
+                    - script.execute: pl_render
+                    - script.execute: page_timeout
+                  widgets:
+                    - image: {src: pl_disc_140, align: CENTER, scale: 0.72}
+                    - image: {id: pl_r_icon, src: icon_house, align: CENTER, scale: 0.72}
+              - button:
+                  id: pl_cb
+                  align: CENTER
+                  y: -16
+                  width: 144
+                  height: 144
+                  radius: 72
+                  bg_opa: 0
+                  border_width: 0
+                  on_click:
+                    - script.execute: screen_timeout_timer
+                    - script.execute: pl_play
+                  widgets:
+                    - image: {src: pl_disc_140, align: CENTER}
+                    - image: {id: pl_c_icon, src: icon_disco, align: CENTER}
+              - label: {id: pl_name, text: "Disco", align: CENTER, y: 84, text_font: hk_40, text_color: 0xF2F2F0}
+              - obj:
+                  id: pl_dots
+                  align: CENTER
+                  y: 124
+                  width: 112
+                  height: 8
+                  bg_opa: 0
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  widgets:
+                    - obj: {id: pd0, align: CENTER, x: -48, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+                    - obj: {id: pd1, align: CENTER, x: -32, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+                    - obj: {id: pd2, align: CENTER, x: -16, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+                    - obj: {id: pd3, align: CENTER, x: 0, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+                    - obj: {id: pd4, align: CENTER, x: 16, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+                    - obj: {id: pd5, align: CENTER, x: 32, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+                    - obj: {id: pd6, align: CENTER, x: 48, width: 8, height: 8, radius: 4, bg_color: 0xD6D8DC, border_width: 0}
+              - button:
+                  id: pl_ug
+                  align: CENTER
+                  y: 176
+                  width: 230
+                  height: 40
+                  radius: 20
+                  bg_color: 0x1B1C1F
+                  border_width: 1
+                  border_color: 0xC9CBCF
+                  border_opa: 30%
+                  on_click:
+                    - script.execute: screen_timeout_timer
+                    - script.execute: ungroup_all
+                  widgets:
+                    - label: {id: pl_ug_lbl, text: "UNGROUP ALL ROOMS", align: CENTER, text_font: hk_16, text_letter_space: 2, text_color: 0xD6D8DC}
+              # Favourites / Albums: a knob-driven wheel, the chosen row large in the middle
+              - obj:
+                  id: pl_listv
+                  hidden: true
+                  align: CENTER
+                  width: 480
+                  height: 480
+                  bg_opa: 0
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label: {id: pl_r0, align: CENTER, y: -128, width: 280, height: 26, long_mode: DOT, text_align: CENTER, text_font: mr_20, text_color: 0xF2F2F0, text_opa: 22%}
+                    - label: {id: pl_r1, align: CENTER, y: -88, width: 320, height: 26, long_mode: DOT, text_align: CENTER, text_font: mr_20, text_color: 0xF2F2F0, text_opa: 48%}
+                    - obj:
+                        align: CENTER
+                        y: -4
+                        width: 360
+                        height: SIZE_CONTENT
+                        bg_opa: 0
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: FLEX, flex_flow: COLUMN, flex_align_cross: CENTER, flex_align_track: CENTER, pad_row: 6}
+                        on_click: [{script.execute: screen_timeout_timer}, {script.execute: pl_play}]
+                        widgets:
+                          - label: {id: pl_st, width: 360, long_mode: WRAP, text_align: CENTER, text_font: hk_32, text_color: 0xF2F2F0, text: ""}
+                          - label: {id: pl_sa, width: 320, height: 26, long_mode: DOT, text_align: CENTER, text_font: mr_20, text_color: 0xD6D8DC, text_opa: 70%, text: ""}
+                    - label: {id: pl_r2, align: CENTER, y: 88, width: 320, height: 26, long_mode: DOT, text_align: CENTER, text_font: mr_20, text_color: 0xF2F2F0, text_opa: 48%}
+                    - label: {id: pl_r3, align: CENTER, y: 128, width: 280, height: 26, long_mode: DOT, text_align: CENTER, text_font: mr_20, text_color: 0xF2F2F0, text_opa: 22%}
+                    - label: {id: pl_cnt, align: CENTER, y: 168, text: "", text_font: hk_12, text_letter_space: 2, text_color: 0xD6D8DC, text_opa: 55%}

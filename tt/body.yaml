@@ -1,0 +1,994 @@
+
+# --------------------------------------------------------
+# BÆO REMOTE (media-only UI; turntable retired 2026-09-27)
+#   Face 0 "Face A": gold radial face in a dark bezel, etched Manrope clock /
+#   title / artist and a Syne BÆOREMOTE wordmark (BaeoRemote Face A Spec.pdf).
+#   Face 1 "Nocturne": smoked glass over a blurred cover, lit volume ring.
+#   Swipe left/right toggles faces; hold the knob for Playlists (+ ungroup).
+# current_mode: 0 now-playing · 6 playlists · 9 inert
+# face (swipe left/right): 0 Face A · 1 Nocturne
+# idle -> night face: dim amber Face A on near-black (grp_night, top layer)
+# --------------------------------------------------------
+http_request:
+  verify_ssl: false
+  timeout: 2s
+
+image:
+  - file: "tt/pl_disc_140.png"
+    id: pl_disc_140
+    type: RGB565
+    transparency: alpha_channel
+  - file: "tt/art_ph.png"
+    id: art_ph
+    type: RGB565
+  - file: "icon_disco_w.png"
+    id: icon_disco
+    type: RGB565
+    transparency: alpha_channel
+    resize: 38x44
+  - file: "icon_house_w.png"
+    id: icon_house
+    type: RGB565
+    transparency: alpha_channel
+    resize: 50x40
+  - file: "icon_mos_w.png"
+    id: icon_mos
+    type: RGB565
+    transparency: alpha_channel
+    resize: 46x42
+  - file: "icon_pdm.png"
+    id: icon_pdm
+    type: RGB565
+    transparency: alpha_channel
+    resize: 48x48
+  - file: "icon_dfp_w.png"
+    id: icon_dfp
+    type: RGB565
+    transparency: alpha_channel
+    resize: 44x44
+  - file: "icon_fav_w.png"
+    id: icon_fav
+    type: RGB565
+    transparency: alpha_channel
+    resize: 46x40
+  - file: "icon_alb_w.png"
+    id: icon_alb
+    type: RGB565
+    transparency: alpha_channel
+    resize: 52x40
+
+online_image:
+  - id: album_blur
+    url: "http://10.0.0.20:8123/local/rotary-no-art.jpg"
+    format: AUTO
+    type: RGB565
+    resize: 24x24
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(art_ok) = true;'
+      - lvgl.image.update: {id: noc_art, src: album_blur}
+      - lambda: |-
+          int w = id(album_blur)->get_width(), h = id(album_blur)->get_height();
+          int m = w < h ? w : h;
+          if (m > 0) lv_image_set_scale((lv_obj_t *) id(noc_art), (256 * 520) / m);
+    on_error:
+      - lambda: 'id(art_ok) = false;'
+
+globals:
+  - id: alarm_state
+    type: int
+    initial_value: '0'
+  - id: alarm_popup_up
+    type: bool
+    initial_value: 'false'
+  - id: alarm_view_hidden
+    type: bool
+    initial_value: 'false'
+  - id: alarm_pulse
+    type: bool
+    initial_value: 'false'
+  - id: alarm_preview
+    type: int
+    initial_value: '0'
+  - id: alarm_time_txt
+    type: std::string
+    initial_value: '"--:--"'
+  - id: alarm_ampm_txt
+    type: std::string
+    initial_value: '""'
+  - id: alarm_what_txt
+    type: std::string
+    initial_value: '""'
+  - id: alarm_start_txt
+    type: std::string
+    initial_value: '""'
+  - id: alarm_back_txt
+    type: std::string
+    initial_value: '""'
+  - id: night_active
+    type: bool
+    initial_value: 'false'
+  - id: night_armed
+    type: bool
+    initial_value: 'false'
+  - id: nav_level              # kept for the alarm scripts; unused otherwise
+    type: int
+    initial_value: '0'
+  - id: current_mode
+    type: int
+    initial_value: '0'
+  - id: pa                     # scratch: mode captured at the start of an action
+    type: int
+    initial_value: '0'
+  - id: media_playing
+    type: bool
+    initial_value: 'false'
+  - id: media_is_tv
+    type: bool
+    initial_value: 'false'
+  - id: last_title
+    type: std::string
+    initial_value: '""'
+  - id: art_key                # "cache=" part of entity_picture last fetched
+    type: std::string
+    initial_value: '""'
+  - id: art_ok                 # last album-art download succeeded
+    type: bool
+    initial_value: 'true'
+  - id: vol_local              # 0..1, what the ticks show
+    type: float
+    initial_value: '0.3'
+  - id: vol_touched_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: pos_s
+    type: float
+    initial_value: '0'
+  - id: dur_s
+    type: float
+    initial_value: '0'
+  - id: seek_touched_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: hud_active
+    type: bool
+    initial_value: 'false'
+  - id: hud_kind               # 1 volume · 2 scrub
+    type: int
+    initial_value: '0'
+  - id: turned_while_held
+    type: bool
+    initial_value: 'false'
+  - id: pl_sel
+    type: int
+    initial_value: '0'
+  - id: pl_list                # Playlists page section: 0 mixes · 1 Sonos favourites · 2 MA albums
+    type: int
+    initial_value: '0'
+  - id: fav_idx
+    type: int
+    initial_value: '0'
+  - id: alb_idx
+    type: int
+    initial_value: '0'
+  - id: fav_v                  # names from sensor.rotary_lists (HA package rotary_lists.yaml)
+    type: std::vector<std::string>
+  - id: alb_v
+    type: std::vector<std::string>
+  - id: art_v
+    type: std::vector<std::string>
+  - id: sp_mask                # bit i = room i in Club's group (bit 0 = Club)
+    type: int
+    initial_value: '1'
+  - id: ug_list                # rooms being unjoined (comma list)
+    type: std::string
+    initial_value: '""'
+  - id: ug_n
+    type: int
+    initial_value: '0'
+  - id: face                   # 0 Face A · 1 Nocturne
+    type: int
+    restore_value: true
+    initial_value: '0'
+  - id: tv_title               # what's on the TV (borrowed from Plex / the Streamer)
+    type: std::string
+    initial_value: '""'
+  - id: tv_sub
+    type: std::string
+    initial_value: '""'
+  - id: tv_pic
+    type: std::string
+    initial_value: '""'
+  - id: tx0
+    type: int
+    initial_value: '0'
+  - id: ty0
+    type: int
+    initial_value: '0'
+  - id: tx1
+    type: int
+    initial_value: '0'
+  - id: ty1
+    type: int
+    initial_value: '0'
+  - id: swipe                  # 0 none · 1 left · 2 right · 3 up · 4 down
+    type: int
+    initial_value: '0'
+  - id: swipe_ms
+    type: uint32_t
+    initial_value: '0'
+
+script:
+@@ALARM_SCRIPTS@@
+  # ══ IDLE -> NIGHT CLOCK (unchanged behaviour) ══════════════════════════════
+  - id: screen_timeout_timer
+    mode: restart
+    then:
+      - if:
+          condition: {lambda: 'return id(night_active);'}
+          then:
+            - script.execute: wake_from_night
+          else:
+            - script.execute: apply_awake_brightness
+      - delay: ${night_idle}
+      - if:
+          condition: {lambda: 'return id(party_mode).state;'}
+          then:
+            - if:
+                condition: {lambda: 'return id(current_mode) != 0 && id(current_mode) != 9;'}
+                then: [{script.execute: switch_to_now}]
+          else:
+            - if:
+                condition: {lambda: 'return id(alarm_state) != 1;'}
+                then: [{script.execute: enter_night}]
+
+  - id: apply_awake_brightness
+    then:
+      - if:
+          condition: {lambda: 'return !id(night_active);'}
+          then:
+            - light.control:
+                id: display_backlight
+                brightness: !lambda 'return id(media_is_tv) ? 0.5f : 1.0f;'
+
+  - id: enter_night
+    then:
+      - if:
+          condition: {lambda: 'return !id(party_mode).state;'}
+          then:
+            - lambda: |-
+                id(night_active) = true;
+                id(current_mode) = 9;
+            - script.execute: update_night_clock
+            - lvgl.widget.show: grp_night
+            - light.control:
+                id: display_backlight
+                brightness: !lambda 'return id(night_brightness).state / 100.0f;'
+
+  - id: wake_from_night
+    mode: restart
+    then:
+      - lambda: 'id(night_active) = false;'
+      - light.control:
+          id: display_backlight
+          brightness: !lambda 'return id(media_is_tv) ? 0.5f : 1.0f;'
+      # the waking touch / turn / press is swallowed
+      - delay: 350ms
+      - lvgl.widget.hide: grp_night
+      - if:
+          condition: {lambda: 'return id(alarm_popup_up);'}
+          then: [{lambda: 'id(current_mode) = 9;'}]
+          else: [{script.execute: switch_to_now}]
+
+  - id: update_night_clock
+    then:
+      - lvgl.label.update:
+          id: night_clock_lbl
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char b[8];
+            snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
+            return std::string(b);
+
+  - id: update_clock
+    then:
+      - lambda: |-
+          auto t = id(ha_time).now();
+          char b[8];
+          if (t.is_valid()) snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
+          else snprintf(b, sizeof(b), "--:--");
+          lv_label_set_text((lv_obj_t *) id(fa_clk), b);
+          lv_label_set_text((lv_obj_t *) id(fa_clk_s), b);
+          lv_label_set_text((lv_obj_t *) id(noc_clk), b);
+
+  # ══ FACES ═══════════════════════════════════════════════════════════════
+  # Face A (day) and its night twin, painted once at boot into RGB565 canvases.
+  # A little hash dither keeps the smooth gradients from banding in 16-bit.
+  - id: paint_faces
+    then:
+      - lambda: |-
+          auto hsh = [](uint32_t v) { v ^= v >> 16; v *= 0x7feb352d; v ^= v >> 15; v *= 0x846ca68b; v ^= v >> 16; return v; };
+          // 3-stop gradient: c0 at 0, c1 at m, c2 at 1
+          auto grad = [](float t, const float *c0, const float *c1, const float *c2, float m, float *o) {
+            t = t < 0 ? 0 : (t > 1 ? 1 : t);
+            if (t < m) { float u = t / m; for (int i = 0; i < 3; i++) o[i] = c0[i] + (c1[i] - c0[i]) * u; }
+            else { float u = (t - m) / (1 - m); for (int i = 0; i < 3; i++) o[i] = c1[i] + (c2[i] - c1[i]) * u; }
+          };
+          const float RF = 215.0f;                                   // night face radius; bezel beyond (gold runs to the edge)
+          const float g0[3] = {0xE2, 0xC4, 0x8A}, g1[3] = {0xB0, 0x8E, 0x5A}, g2[3] = {0x6F, 0x53, 0x30};   // gold
+          const float n0[3] = {0x0E, 0x0A, 0x08}, n1[3] = {0x07, 0x05, 0x04}, n2[3] = {0x03, 0x02, 0x02};   // night
+          const float b0[3] = {0x2A, 0x2A, 0x2E}, b2[3] = {0x0B, 0x0B, 0x0C};                               // bezel
+          lv_obj_t *cvs[2] = {(lv_obj_t *) id(fa_cv), (lv_obj_t *) id(nt_cv)};
+          for (int k = 0; k < 2; k++) {
+            lv_draw_buf_t *db = lv_canvas_get_draw_buf(cvs[k]);
+            if (db == nullptr) continue;
+            for (int y = 0; y < 480; y++) {
+              uint16_t *row = (uint16_t *) (db->data + y * db->header.stride);
+              if ((y & 31) == 0) App.feed_wdt();
+              for (int x = 0; x < 480; x++) {
+                float dx = x - 240, dy = y - 240, r = sqrtf(dx * dx + dy * dy);
+                float c[3];
+                if (r >= RF && k == 1) {
+                  // dark radial bezel, a touch lighter towards the face and the top left
+                  float t = (r - RF) / (240.0f - RF), lit = r > 0 ? -(dx * 0.5f + dy * 0.85f) / r : 0;
+                  for (int i = 0; i < 3; i++) c[i] = b0[i] + (b2[i] - b0[i]) * t + lit * 5.0f;
+                  if (r < RF + 1.5f) for (int i = 0; i < 3; i++) c[i] *= 0.55f;          // fine seam
+                } else if (k == 0) {
+                  // gold, lit from 42% / 30%
+                  float lx = x - 0.42f * 480, ly = y - 0.30f * 480;
+                  grad(sqrtf(lx * lx + ly * ly) / 436.0f, g0, g1, g2, 0.45f, c);
+                } else {
+                  grad(r / 304.0f, n0, n1, n2, 0.60f, c);
+                }
+                uint32_t nz = hsh(x * 7919u + y * 104729u + k * 31u);
+                float d = ((nz & 255) / 255.0f - 0.5f) * 7.0f;               // ~1 LSB of RGB565
+                int ci[3];
+                for (int i = 0; i < 3; i++) { float v = c[i] + d; ci[i] = v < 0 ? 0 : (v > 255 ? 255 : (int) v); }
+                row[x] = lv_color_to_u16(lv_color_make(ci[0], ci[1], ci[2]));
+              }
+            }
+            lv_obj_invalidate(cvs[k]);
+          }
+          // Manrope Light numerals run a little tight (-2 px); YAML won't take negative tracking
+          for (lv_obj_t *o : {(lv_obj_t *) id(night_clock_lbl), (lv_obj_t *) id(fa_num), (lv_obj_t *) id(fa_num_s), (lv_obj_t *) id(noc_num)})
+            lv_obj_set_style_text_letter_space(o, -2, LV_PART_MAIN);
+
+  # Nocturne: dark radial wash + a faint top-left reflection over the cover bloom
+  - id: paint_vignette
+    then:
+      - lambda: |-
+          lv_draw_buf_t *db = lv_canvas_get_draw_buf((lv_obj_t *) id(noc_vig));
+          if (db == nullptr) return;
+          for (int y = 0; y < 480; y++) {
+            uint32_t *row = (uint32_t *) (db->data + y * db->header.stride);
+            if ((y & 31) == 0) App.feed_wdt();
+            for (int x = 0; x < 480; x++) {
+              float dx = x - 240, dy = y - 240, r = sqrtf(dx * dx + dy * dy);
+              if (r >= 222.0f) {                           // glossy black band around the glass
+                float ny = dy / r;
+                int v = 7 + (int) ((r < 224.0f ? (224.0f - r) : 0) * 3) + (int) (-ny * 5);
+                v = v < 3 ? 3 : v;
+                row[x] = 0xFF000000u | ((uint32_t) v << 16) | ((uint32_t) v << 8) | (uint32_t) (v + 1);
+              } else {                                     // smoked glass: darker towards the band
+                float q = r / 222.0f;
+                float a = 0.46f + 0.44f * q * q;
+                float rx = (x - 150) / 200.0f, ry = (y - 20) / 120.0f, g = 1.0f - (rx * rx + ry * ry);
+                if (g > 0) {
+                  float gl = g * 0.08f;
+                  uint8_t w = (uint8_t) (255 * gl / (a + gl));
+                  row[x] = ((uint32_t) (uint8_t) ((a + gl) * 255) << 24) | ((uint32_t) w << 16) | ((uint32_t) w << 8) | w;
+                } else row[x] = ((uint32_t) (uint8_t) (a * 255) << 24) | 0x050506;
+              }
+            }
+          }
+          lv_obj_invalidate((lv_obj_t *) id(noc_vig));
+
+  # nudge the whole UI vertically so it sits centred in the physical ring
+  - id: apply_offset
+    then:
+      - lambda: |-
+          int dy = (int) id(screen_offset_y).state;
+          lv_obj_t *roots[2] = {lv_screen_active(), lv_layer_top()};
+          for (auto root : roots) {
+            uint32_t n = lv_obj_get_child_count(root);
+            for (uint32_t i = 0; i < n; i++) lv_obj_set_style_translate_y(lv_obj_get_child(root, i), dy, LV_PART_MAIN);
+          }
+
+  - id: set_face
+    parameters:
+      f: int
+    then:
+      - lambda: |-
+          id(face) = f == 1 ? 1 : 0;
+          if (id(face) == 0) {
+            lv_obj_add_flag((lv_obj_t *) id(grp_noc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag((lv_obj_t *) id(grp_fa), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag((lv_obj_t *) id(grp_fa), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag((lv_obj_t *) id(grp_noc), LV_OBJ_FLAG_HIDDEN);
+          }
+      - script.execute: update_np
+      - script.execute: update_clock
+
+  # knob turned / scrubbed on a face: big numeral + lit volume
+  - id: face_hud
+    then:
+      - lambda: |-
+          char b[16];
+          if (id(hud_kind) == 1) snprintf(b, sizeof(b), "%d", (int) roundf(id(vol_local) * 100));
+          else { int t = (int) id(pos_s); snprintf(b, sizeof(b), "%d:%02d", t / 60, t % 60); }
+          int v = (int) roundf(id(vol_local) * 100);
+          if (id(face) == 0) {
+            lv_label_set_text((lv_obj_t *) id(fa_num), b); lv_label_set_text((lv_obj_t *) id(fa_num_s), b);
+            lv_obj_remove_flag((lv_obj_t *) id(fa_num), LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag((lv_obj_t *) id(fa_num_s), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag((lv_obj_t *) id(fa_np), LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag((lv_obj_t *) id(fa_np_s), LV_OBJ_FLAG_HIDDEN);
+            lv_arc_set_value((lv_obj_t *) id(fa_vol), v); lv_obj_remove_flag((lv_obj_t *) id(fa_vol), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_label_set_text((lv_obj_t *) id(noc_num), b);
+            lv_obj_remove_flag((lv_obj_t *) id(noc_num), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag((lv_obj_t *) id(noc_title), LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag((lv_obj_t *) id(noc_artist), LV_OBJ_FLAG_HIDDEN);
+            lv_arc_set_value((lv_obj_t *) id(noc_ring), v);
+            lv_obj_set_style_arc_width((lv_obj_t *) id(noc_ring), 3, LV_PART_INDICATOR);
+            lv_arc_set_value((lv_obj_t *) id(noc_glow), v);
+          }
+
+  - id: face_hud_end
+    then:
+      - lambda: |-
+          lv_obj_add_flag((lv_obj_t *) id(fa_num), LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag((lv_obj_t *) id(fa_num_s), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag((lv_obj_t *) id(fa_np), LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag((lv_obj_t *) id(fa_np_s), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag((lv_obj_t *) id(fa_vol), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag((lv_obj_t *) id(noc_num), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag((lv_obj_t *) id(noc_title), LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag((lv_obj_t *) id(noc_artist), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_set_style_arc_width((lv_obj_t *) id(noc_ring), 2, LV_PART_INDICATOR);
+
+  # ══ NAVIGATION ════════════════════════════════════════════════════════════
+  # The alarm scripts call switch_to_home; it is the now-playing deck now.
+  - id: switch_to_home
+    then: [{script.execute: switch_to_now}]
+
+  - id: switch_to_now
+    then:
+      - script.stop: page_timeout
+      - lambda: 'id(current_mode) = 0;'
+      - lvgl.widget.hide: grp_pl
+      - script.execute: update_np
+      - script.execute: update_clock
+
+  - id: open_playlists
+    then:
+      - lambda: 'id(current_mode) = 6; id(pl_list) = 0;'
+      - script.execute: pl_render
+      - lvgl.widget.show: grp_pl
+      - script.execute: page_timeout
+
+  # the Playlists page closes itself when left alone
+  - id: page_timeout
+    mode: restart
+    then:
+      - delay: 20s
+      - if:
+          condition: {lambda: 'return id(current_mode) == 6;'}
+          then: [{script.execute: switch_to_now}]
+
+  - id: ungroup_all
+    then:
+      - lambda: |-
+          static const char *const e[] = @@ROOM_ENTS_ARR@@;
+          std::string list; int n = 0;
+          for (int i = 1; i < 5; i++)
+            if ((id(sp_mask) >> i) & 1) { if (n++) list += ","; list += e[i]; }
+          id(ug_list) = list; id(ug_n) = n;
+      - if:
+          condition: {lambda: 'return id(ug_n) > 0;'}
+          then:
+            - homeassistant.action:
+                action: media_player.unjoin
+                data:
+                  entity_id: !lambda 'return id(ug_list);'
+            - lambda: 'id(sp_mask) = 1;'
+      - lvgl.label.update:
+          id: pl_ug_lbl
+          text: !lambda |-
+            if (id(ug_n) == 0) return std::string("CLUB ALREADY ALONE");
+            char b[32];
+            snprintf(b, sizeof(b), "UNGROUPED %d ROOM%s", id(ug_n), id(ug_n) > 1 ? "S" : "");
+            return std::string(b);
+      - script.execute: page_timeout
+      - delay: 2500ms
+      - lvgl.label.update: {id: pl_ug_lbl, text: "UNGROUP ALL ROOMS"}
+
+  # ══ INPUT ═════════════════════════════════════════════════════════════════
+  - id: knob_turn
+    parameters:
+      dir: int
+    then:
+      - script.execute: screen_timeout_timer
+      - lambda: |-
+          id(pa) = id(current_mode);
+          if (id(rotary_button).state) { id(turned_while_held) = true; id(pa) += 100; }
+      # now playing: volume
+      - if:
+          condition: {lambda: 'return id(pa) == 0;'}
+          then:
+            - lambda: |-
+                float v = id(vol_local) + dir * 0.02f;
+                id(vol_local) = v < 0 ? 0 : (v > 1 ? 1 : v);
+                id(vol_touched_ms) = millis();
+            - script.execute: {id: hud_show, kind: 1}
+            - script.execute: vol_send
+      # now playing + held: scrub through the track
+      - if:
+          condition: {lambda: 'return id(pa) == 100 && id(dur_s) > 0;'}
+          then:
+            - lambda: |-
+                float step = id(dur_s) / 60.0f; if (step < 5) step = 5;
+                float p = id(pos_s) + dir * step;
+                id(pos_s) = p < 0 ? 0 : (p > id(dur_s) - 1 ? id(dur_s) - 1 : p);
+                id(seek_touched_ms) = millis();
+            - script.execute: {id: hud_show, kind: 2}
+            - script.execute: seek_send
+      # playlists: choose
+      - if:
+          condition: {lambda: 'return id(pa) == 6 || id(pa) == 106;'}
+          then:
+            - lambda: |-
+                if (id(pl_list) == 0) { id(pl_sel) = (id(pl_sel) + dir + 7) % 7; return; }
+                int n = id(pl_list) == 1 ? id(fav_v).size() : id(alb_v).size();
+                int &ix = id(pl_list) == 1 ? id(fav_idx) : id(alb_idx);
+                ix += dir; if (ix > n - 1) ix = n - 1; if (ix < 0) ix = 0;
+            - script.execute: pl_render
+            - script.execute: page_timeout
+
+  - id: knob_press
+    then:
+      - script.execute: screen_timeout_timer
+      - lambda: 'id(pa) = id(current_mode);'
+      - if:
+          condition: {lambda: 'return id(pa) == 0;'}
+          then:
+            - homeassistant.action: {action: media_player.media_play_pause, data: {entity_id: media_player.club}}
+      - if:
+          condition: {lambda: 'return id(pa) == 6;'}
+          then: [{script.execute: pl_play}]
+
+  - id: knob_long
+    then:
+      - script.execute: screen_timeout_timer
+      - lambda: 'id(pa) = id(current_mode);'
+      - if:
+          condition: {lambda: 'return id(pa) == 0;'}
+          then: [{script.execute: open_playlists}]
+      - if:
+          condition: {lambda: 'return id(pa) == 6;'}
+          then: [{script.execute: pl_back}]
+
+  - id: tap_center
+    mode: restart
+    then:
+      - delay: 60ms
+      - if:
+          condition: {lambda: 'return millis() - id(swipe_ms) > 400 && id(current_mode) == 0;'}
+          then:
+            - homeassistant.action: {action: media_player.media_play_pause, data: {entity_id: media_player.club}}
+
+  - id: swipe_act
+    then:
+      - lambda: 'id(pa) = id(current_mode);'
+      - if:
+          condition: {lambda: 'return id(pa) == 0 && id(swipe) == 1;'}
+          then: [{script.execute: {id: set_face, f: !lambda 'return 1 - id(face);'}}]
+      - if:
+          condition: {lambda: 'return id(pa) == 0 && id(swipe) == 2;'}
+          then: [{script.execute: {id: set_face, f: !lambda 'return 1 - id(face);'}}]
+      - if:
+          condition: {lambda: 'return id(pa) == 0 && id(swipe) == 4;'}
+          then: [{script.execute: open_playlists}]
+      # playlists: sideways swipes change section, up/down closes
+      - if:
+          condition: {lambda: 'return id(pa) == 6;'}
+          then: [{script.execute: pl_back}]
+
+  # ══ NOW PLAYING ═══════════════════════════════════════════════════════════
+  - id: vol_send
+    mode: restart
+    then:
+      - delay: 150ms
+      - homeassistant.action:
+          action: media_player.volume_set
+          data:
+            entity_id: media_player.club
+            volume_level: !lambda 'return id(vol_local);'
+
+  - id: seek_send
+    mode: restart
+    then:
+      - delay: 400ms
+      - homeassistant.action:
+          action: media_player.media_seek
+          data:
+            entity_id: media_player.club
+            seek_position: !lambda 'return (int) id(pos_s);'
+
+  # Pill's second line doubles as the readout while turning (1) or scrubbing (2)
+  - id: hud_show
+    mode: restart
+    parameters:
+      kind: int
+    then:
+      - lambda: 'id(hud_active) = true; id(hud_kind) = kind;'
+      - script.execute: face_hud
+      - delay: 1400ms
+      - lambda: 'id(hud_active) = false;'
+      - script.execute: face_hud_end
+      - script.execute: update_np
+
+  # Club on the TV input: borrow title + poster from whatever the TV is playing,
+  # Plex client first (it has the real poster), then the Google TV Streamer.
+  - id: tv_refresh
+    then:
+      - lambda: |-
+          auto ok = [](const std::string &v) { return !(v.empty() || v == "unknown" || v == "unavailable" || v == "None"); };
+          auto live = [](const std::string &s) { return s == "playing" || s == "paused"; };
+          std::string title, sub, pic;
+          if (ok(id(tv_plex_state).state) && ok(id(tv_plex_title).state)) {
+            title = id(tv_plex_title).state;
+            sub = ok(id(tv_plex_series).state) ? id(tv_plex_series).state : std::string("Plex");
+          } else if (ok(id(tv_cast_state).state) && ok(id(tv_cast_title).state)) {
+            title = id(tv_cast_title).state;
+            sub = ok(id(tv_cast_app).state) ? id(tv_cast_app).state : std::string("");
+          }
+          if (live(id(tv_plex_state).state) && ok(id(tv_plex_pic).state)) pic = id(tv_plex_pic).state;
+          else if (live(id(tv_cast_state).state) && ok(id(tv_cast_pic).state)) pic = id(tv_cast_pic).state;
+          else if (live(id(tv_atv_state).state) && ok(id(tv_atv_pic).state)) pic = id(tv_atv_pic).state;
+          id(tv_title) = title; id(tv_sub) = sub; id(tv_pic) = pic;
+      - if:
+          condition:
+            lambda: |-
+              if (!id(media_is_tv) || id(tv_pic).empty()) return false;
+              const std::string &x = id(tv_pic);
+              size_t p = x.find("cache=");
+              std::string k = "tv:" + (p == std::string::npos ? x : x.substr(p));
+              if (k == id(art_key)) return false;
+              id(art_key) = k;
+              return true;
+          then:
+            - online_image.set_url:
+                id: album_blur
+                url: !lambda |-
+                  const std::string &x = id(tv_pic);
+                  return x[0] == '/' ? std::string("http://10.0.0.20:8123") + x : x;
+      - script.execute: update_np
+
+  - id: update_np
+    then: [{script.execute: update_faces}]
+
+  - id: update_faces
+    then:
+      - lambda: |-
+          auto ok = [](const std::string &v) { return !(v.empty() || v == "unknown" || v == "unavailable" || v == "None"); };
+          std::string t = ok(id(media_title).state) ? id(media_title).state : std::string("Nothing playing");
+          std::string a = ok(id(media_artist).state) ? id(media_artist).state : std::string("");
+          if (id(media_is_tv)) { t = id(tv_title).empty() ? std::string("TV") : id(tv_title); a = id(tv_sub); }
+          size_t amp = a.find(" & "); if (amp != std::string::npos) a = a.substr(0, amp);
+          if (!id(media_playing)) a = "Paused";
+          for (auto &c : a) if ((unsigned char) c < 0x80) c = toupper((unsigned char) c);
+          lv_label_set_text((lv_obj_t *) id(noc_title), t.c_str());
+          lv_label_set_text((lv_obj_t *) id(noc_artist), a.c_str());
+          lv_obj_set_style_opa((lv_obj_t *) id(noc_title), id(media_playing) ? LV_OPA_COVER : LV_OPA_50, LV_PART_MAIN);
+          lv_obj_set_style_image_opa((lv_obj_t *) id(noc_art), id(media_playing) ? 235 : 120, LV_PART_MAIN);
+          // Face A: one line of title, cut at a word (UTF-8 safe); the label also dots anything wider
+          std::string ft = t;
+          if (ft.size() > 22) {
+            size_t p = ft.rfind(' ', 22); if (p == std::string::npos || p < 12) p = 22;
+            while (p > 0 && (ft[p] & 0xC0) == 0x80) p--;
+            ft = ft.substr(0, p) + "\u2026";
+          }
+          lv_label_set_text((lv_obj_t *) id(fa_title), ft.c_str()); lv_label_set_text((lv_obj_t *) id(fa_title_s), ft.c_str());
+          lv_label_set_text((lv_obj_t *) id(fa_artist), a.c_str()); lv_label_set_text((lv_obj_t *) id(fa_artist_s), a.c_str());
+          // night face: track info only while something is actually playing
+          bool on = id(media_playing) && ok(t) && t != "Nothing playing";
+          lv_label_set_text((lv_obj_t *) id(nt_title), on ? t.c_str() : "");
+          lv_label_set_text((lv_obj_t *) id(nt_artist), on ? a.c_str() : "");
+
+  # ══ PLAYLISTS ═════════════════════════════════════════════════════════════
+  # close / hold / swipe: from a list back to the carousel, from the carousel out
+  - id: pl_back
+    then:
+      - script.execute: screen_timeout_timer
+      - if:
+          condition: {lambda: 'return id(pl_list) != 0;'}
+          then:
+            - lambda: 'id(pl_list) = 0;'
+            - script.execute: pl_render
+            - script.execute: page_timeout
+          else:
+            - script.execute: switch_to_now
+
+  - id: pl_render
+    then:
+      - lambda: |-
+          int L = id(pl_list);
+          auto vis = [](lv_obj_t *o, bool v) { if (v) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN); };
+          lv_obj_t *mix[] = {(lv_obj_t *) id(pl_lb), (lv_obj_t *) id(pl_rb), (lv_obj_t *) id(pl_cb), (lv_obj_t *) id(pl_name),
+                             (lv_obj_t *) id(pl_dots), (lv_obj_t *) id(pl_ug)};
+          for (auto o : mix) vis(o, L == 0);
+          vis((lv_obj_t *) id(pl_listv), L != 0);
+          lv_label_set_text((lv_obj_t *) id(pl_head), L == 0 ? "PLAYLISTS" : L == 1 ? "FAVOURITES" : "ALBUMS");
+          lv_label_set_text((lv_obj_t *) id(pl_x), L == 0 ? "\uF00D" : "\uF053");
+          if (L == 0) return;
+          const std::vector<std::string> &v = L == 1 ? id(fav_v) : id(alb_v);
+          int n = v.size();
+          int &ix = L == 1 ? id(fav_idx) : id(alb_idx);
+          if (ix > n - 1) ix = n - 1; if (ix < 0) ix = 0;
+          // keep the big title to two lines: cut at a word, UTF-8 safe
+          auto cut = [](std::string s, size_t m) {
+            if (s.size() <= m) return s;
+            size_t p = s.rfind(' ', m); if (p == std::string::npos || p < m / 2) p = m;
+            while (p > 0 && (s[p] & 0xC0) == 0x80) p--;
+            return s.substr(0, p) + "\u2026";
+          };
+          std::string t = n ? cut(v[ix], 40) : std::string(L == 1 ? "No favourites" : "No albums");
+          std::string a = (L == 2 && ix < (int) id(art_v).size()) ? id(art_v)[ix] : std::string("");
+          lv_label_set_text((lv_obj_t *) id(pl_st), t.c_str());
+          lv_label_set_text((lv_obj_t *) id(pl_sa), a.c_str());
+          vis((lv_obj_t *) id(pl_sa), !a.empty());
+          lv_obj_t *rows[4] = {(lv_obj_t *) id(pl_r0), (lv_obj_t *) id(pl_r1), (lv_obj_t *) id(pl_r2), (lv_obj_t *) id(pl_r3)};
+          int off[4] = {-2, -1, 1, 2};
+          for (int i = 0; i < 4; i++) {
+            int j = ix + off[i];
+            lv_label_set_text(rows[i], (j >= 0 && j < n) ? v[j].c_str() : "");
+          }
+          char c[24]; snprintf(c, sizeof(c), n ? "%d / %d" : "", ix + 1, n);
+          lv_label_set_text((lv_obj_t *) id(pl_cnt), c);
+      - lambda: |-
+          if (id(pl_list) != 0) return;
+          static image::Image *const ic[7] = {id(icon_disco), id(icon_house), id(icon_mos), id(icon_pdm), id(icon_dfp), id(icon_fav), id(icon_alb)};
+          static const char *const n[7] = {"Disco", "House", "MOS", "PDM", "DFP", "Favourites", "Albums"};
+          int s = id(pl_sel);
+          lv_image_set_src((lv_obj_t *) id(pl_c_icon), ic[s]->get_lv_image_dsc());
+          lv_image_set_src((lv_obj_t *) id(pl_l_icon), ic[(s + 6) % 7]->get_lv_image_dsc());
+          lv_image_set_src((lv_obj_t *) id(pl_r_icon), ic[(s + 1) % 7]->get_lv_image_dsc());
+          lv_label_set_text((lv_obj_t *) id(pl_name), n[s]);
+          lv_obj_t *d[7] = {(lv_obj_t *) id(pd0), (lv_obj_t *) id(pd1), (lv_obj_t *) id(pd2), (lv_obj_t *) id(pd3),
+                            (lv_obj_t *) id(pd4), (lv_obj_t *) id(pd5), (lv_obj_t *) id(pd6)};
+          for (int i = 0; i < 7; i++)
+            lv_obj_set_style_bg_opa(d[i], i == s ? LV_OPA_COVER : LV_OPA_20, LV_PART_MAIN);
+
+  - id: pl_play
+    then:
+      - if:
+          condition: {lambda: 'return id(pl_list) != 0;'}
+          then:
+            - if:
+                condition: {lambda: 'return (id(pl_list) == 1 ? id(fav_v).size() : id(alb_v).size()) > 0;'}
+                then:
+                  - homeassistant.action:
+                      action: script.rotary_play_list
+                      data:
+                        kind: !lambda 'return std::string(id(pl_list) == 1 ? "fav" : "album");'
+                        idx: !lambda 'return to_string(id(pl_list) == 1 ? id(fav_idx) : id(alb_idx));'
+                  - script.execute: switch_to_now
+          else:
+            - if:
+                condition: {lambda: 'return id(pl_sel) >= 5;'}
+                then:
+                  - lambda: 'id(pl_list) = id(pl_sel) - 4;'
+                  - script.execute: pl_render
+                  - script.execute: page_timeout
+                else:
+                  - script.execute: pl_play_mix
+
+  - id: pl_play_mix
+    then:
+      - homeassistant.action:
+          action: script.turn_on
+          data:
+            entity_id: !lambda |-
+              static const char *const s[] = {"script.play_disco", "script.play_house",
+                "script.play_mos", "script.play_pdm", "script.play_dfp"};
+              return std::string(s[id(pl_sel)]);
+      - script.execute: switch_to_now
+
+
+interval:
+  # --- work alarm: pulse + clock + countdown twice a second while the popup is up
+  - interval: 500ms
+    then:
+      - if:
+          condition: {lambda: 'return id(alarm_popup_up);'}
+          then:
+            - script.execute: alarm_refresh_text
+            - if:
+                condition: {lambda: 'return id(alarm_state) == 1;'}
+                then:
+                  - lambda: 'id(alarm_pulse) = !id(alarm_pulse);'
+                  - if:
+                      condition: {lambda: 'return id(alarm_pulse);'}
+                      then: [{lvgl.obj.update: {id: alarm_icon_bg, bg_opa: 70%}}]
+                      else: [{lvgl.obj.update: {id: alarm_icon_bg, bg_opa: 25%}}]
+  # --- work alarm: while RINGING, keep the screen on even if someone hits sleep
+  - interval: 20s
+    then:
+      - if:
+          condition: {lambda: 'return id(alarm_state) == 1;'}
+          then:
+            - lambda: 'id(night_active) = false;'
+            - lvgl.widget.hide: grp_night
+            - light.control: {id: display_backlight, brightness: 100%}
+  # --- night clock tick + arm the idle timer once after boot
+  - interval: 5s
+    then:
+      - if:
+          condition: {lambda: 'return id(night_active);'}
+          then: [{script.execute: update_night_clock}]
+      - if:
+          condition: {lambda: 'return !id(night_armed);'}
+          then:
+            - lambda: 'id(night_armed) = true;'
+            - script.execute: screen_timeout_timer
+            - script.execute: switch_to_now
+  # --- track position (HA only reports it on changes) -> tonearm
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(media_playing) && millis() - id(seek_touched_ms) > 1500) {
+            id(pos_s) += 1;
+            if (id(dur_s) > 0 && id(pos_s) > id(dur_s)) id(pos_s) = id(dur_s);
+          }
+  # --- album art: retry a failed download
+  - interval: 30s
+    then:
+      - if:
+          condition: {lambda: 'return !id(art_ok) && !id(art_key).empty();'}
+          then: [{component.update: album_blur}]
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time:
+      - seconds: 0
+        minutes: '*'
+        then:
+          - script.execute: update_clock
+
+binary_sensor:
+  # --- auto-stay (party mode): no night clock
+  - platform: homeassistant
+    id: party_mode
+    entity_id: input_boolean.auto_stay
+    on_press:
+      then:
+        - if:
+            condition: {lambda: 'return id(night_active);'}
+            then:
+              - lvgl.widget.hide: grp_night
+              - lambda: 'id(night_active) = false;'
+              - script.execute: switch_to_now
+        - script.execute: screen_timeout_timer
+    on_release:
+      then:
+        - script.execute: screen_timeout_timer
+  # --- work alarm (mirrors Home Assistant)
+  - platform: homeassistant
+    id: alarm_ringing
+    entity_id: input_boolean.work_alarm_ringing
+    on_state:
+      then:
+        - script.execute: update_alarm
+  - platform: gpio
+    id: rotary_button
+    pin:
+      pcf8574: pcf
+      number: 5
+      mode: INPUT
+      inverted: true
+    on_press:
+      - lambda: 'id(turned_while_held) = false;'
+    on_multi_click:
+      - timing:
+          - ON for at most 400ms
+          - OFF for at most 400ms
+          - ON for at most 400ms
+          - OFF for at most 400ms
+          - ON for at most 400ms
+          - OFF for at least 400ms
+        then:
+          - script.execute: screen_timeout_timer
+          - if:
+              condition: {lambda: 'return id(current_mode) == 0;'}
+              then:
+                - homeassistant.action: {action: media_player.media_previous_track, data: {entity_id: media_player.club}}
+      - timing:
+          - ON for at most 400ms
+          - OFF for at most 400ms
+          - ON for at most 400ms
+          - OFF for at least 400ms
+        then:
+          - script.execute: screen_timeout_timer
+          - if:
+              condition: {lambda: 'return id(current_mode) == 0;'}
+              then:
+                - homeassistant.action: {action: media_player.media_next_track, data: {entity_id: media_player.club}}
+      - timing:
+          - ON for 50ms to 400ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition: {lambda: 'return !id(turned_while_held);'}
+              then: [{script.execute: knob_press}]
+      # long press fires on release, so hold + turn (scrub) doesn't also trigger it
+      - timing:
+          - ON for at least 600ms
+          - OFF for at least 20ms
+        then:
+          - if:
+              condition: {lambda: 'return !id(turned_while_held);'}
+              then: [{script.execute: knob_long}]
+
+sensor:
+  - platform: rotary_encoder
+    id: rotary_dial
+    pin_a:
+      number: 4
+      mode: INPUT_PULLUP
+    pin_b:
+      number: 42
+      mode: INPUT_PULLUP
+    on_clockwise:
+      - script.execute: {id: knob_turn, dir: 1}
+    on_anticlockwise:
+      - script.execute: {id: knob_turn, dir: -1}
+
+  - platform: homeassistant
+    id: ha_media_volume
+    entity_id: media_player.club
+    attribute: volume_level
+    on_value:
+      then:
+        - lambda: |-
+            if (isnan(x)) return;
+            if (millis() - id(vol_touched_ms) > 2500) id(vol_local) = x;
+
+  - platform: homeassistant
+    id: ha_media_pos
+    entity_id: media_player.club
+    attribute: media_position
+    on_value:
+      then:
+        - lambda: 'if (!isnan(x) && millis() - id(seek_touched_ms) > 2500) id(pos_s) = x;'
+  - platform: homeassistant
+    id: ha_media_dur
+    entity_id: media_player.club
+    attribute: media_duration
+    on_value:
+      then:
+        - lambda: 'id(dur_s) = isnan(x) ? 0 : x;'
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic
+
+touchscreen:
+  - platform: cst816
+    id: touch_screen
+    # no reset line: after a soft restart the chip can still be asleep and
+    # fail the chip-ID probe, so don't let the probe disable touch
+    skip_probe: true
+    on_touch:
+      - lambda: 'id(tx0) = touch.x; id(ty0) = touch.y; id(tx1) = touch.x; id(ty1) = touch.y;'
+      - script.execute: screen_timeout_timer
+    on_update:
+      - lambda: 'for (auto &t : touches) { id(tx1) = t.x; id(ty1) = t.y; break; }'
+    on_release:
+      - lambda: |-
+          int dx = id(tx1) - id(tx0), dy = id(ty1) - id(ty0);
+          int sw = 0;
+          if (abs(dx) > 60 && abs(dx) > abs(dy) * 1.3f) sw = dx < 0 ? 1 : 2;
+          else if (abs(dy) > 70 && abs(dy) > abs(dx) * 1.3f) sw = dy < 0 ? 3 : 4;
+          id(swipe) = sw;
+          if (sw) id(swipe_ms) = millis();
+      - if:
+          condition: {lambda: 'return id(swipe) != 0 && !id(night_active);'}
+          then: [{script.execute: swipe_act}]

@@ -1,0 +1,2892 @@
+substitutions:
+  night_idle: 180s              # no interaction for this long -> faded clock
+  night_clock_color: "0x9A5F2C" # warm amber: no blue light while sleeping
+  night_date_color: "0x6E4526"
+
+esphome:
+  name: rotary-display-1
+  friendly_name: rotary-display-1
+  platformio_options:
+    build_flags: "-DBOARD_HAS_PSRAM"
+    board_build.esp-idf.memory_type: qio_opi
+    board_build.flash_mode: dio
+  on_boot:
+    priority: 800
+    then:
+      - output.turn_on: lcd_power
+      - output.turn_on: display_reset
+      - delay: 100ms
+      - output.turn_off: display_reset
+      - delay: 500ms
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+    
+psram:
+  mode: octal
+  speed: 80MHz 
+
+logger:
+
+api:
+  actions:
+    # Test hook only: preview the alarm popup without touching Home Assistant.
+    # mode 1 = ringing, 2 = snoozed, 0 = back to live. Reverts by itself after 25 s.
+    - action: alarm_preview
+      variables:
+        mode: int
+      then:
+        - lambda: 'id(alarm_preview) = mode;'
+        - script.execute: update_alarm
+        - script.execute: alarm_preview_timeout
+  encryption:
+    key: !secret rotary_api_key
+
+ota:
+  - platform: esphome
+    password: !secret rotary_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Rotary-Display-1"
+    password: !secret rotary_ap_password
+
+  use_address: 10.0.1.122
+captive_portal:
+
+web_server:
+  port: 80
+
+# --------------------------------------------------------
+
+
+# HARDWARE & I2C
+# --------------------------------------------------------
+i2c:
+  sda: GPIO38
+  scl: GPIO39
+  id: bus_a
+  scan: true
+  frequency: 400kHz
+
+pcf8574:
+  - id: pcf
+    address: 0x21
+
+output:
+  - platform: ledc
+    pin: 6
+    id: bl_pwm
+    frequency: 19531Hz
+
+  - platform: gpio
+    id: lcd_power
+    pin:
+      pcf8574: pcf
+      number: 3
+      mode: output
+
+  - platform: gpio
+    id: display_reset
+    pin:
+      pcf8574: pcf
+      number: 4
+      mode: output
+      inverted: true
+
+light:
+  - platform: monochromatic
+    name: "LCD Backlight"
+    output: bl_pwm
+    id: display_backlight
+    default_transition_length: 0.5s
+    restore_mode: ALWAYS_ON
+    # Never let the screen go fully dark: if anything (HA, web UI) turns it
+    # off, bounce it straight back on at the dim level.
+    on_turn_off:
+      - delay: 50ms
+      - light.turn_on:
+          id: display_backlight
+          brightness: 55%
+
+# --------------------------------------------------------
+# IMAGE ASSETS
+# --------------------------------------------------------
+image:
+  - file: "sonos_white.png"    # trimmed white wordmark (spins on the record label)
+    id: sonos_logo
+    type: RGB565
+    transparency: alpha_channel
+    resize: 120x24
+
+  # --- PLAYLIST ICONS ------------------------------------------------------
+  # White-on-transparent versions were generated for the four black icons;
+  # the turntable is kept in full colour.
+  - file: "icon_disco_w.png"    # disco ball -> Disco
+    id: icon_disco
+    type: RGB565
+    transparency: alpha_channel
+    resize: 38x44
+  - file: "icon_house_w.png"    # house -> House
+    id: icon_house
+    type: RGB565
+    transparency: alpha_channel
+    resize: 50x40
+  - file: "icon_mos_w.png"      # Ministry of Sound -> MOS
+    id: icon_mos
+    type: RGB565
+    transparency: alpha_channel
+    resize: 46x42
+  - file: "icon_pdm.png"        # turntable (colour) -> PDM
+    id: icon_pdm
+    type: RGB565
+    transparency: alpha_channel
+    resize: 48x48
+  - file: "icon_dfp_w.png"      # Paris sign -> DFP
+    id: icon_dfp
+    type: RGB565
+    transparency: alpha_channel
+    resize: 44x44
+
+  # --- HOME PAGE ICONS (muted neon, one per page) --------------------------
+  - file: "ico_lights.png"
+    id: ico_lights
+    type: RGB565
+    transparency: alpha_channel
+  - file: "ico_scenes.png"
+    id: ico_scenes
+    type: RGB565
+    transparency: alpha_channel
+  - file: "ico_media.png"
+    id: ico_media
+    type: RGB565
+    transparency: alpha_channel
+  - file: "ico_climate.png"
+    id: ico_climate
+    type: RGB565
+    transparency: alpha_channel
+  - file: "ico_blinds.png"
+    id: ico_blinds
+    type: RGB565
+    transparency: alpha_channel
+
+# --------------------------------------------------------
+# GLOBALS
+# current_mode: 0=Media 1=Lights 2=Climate 3=Home 4=Scenes 5=Blinds
+# home_menu_idx: 0=Lights 1=Scenes 2=Media 3=Climate 4=Blinds
+# selected_light_idx: 0=Art 1=Downs 2=LEDs 3=Accent 4=Kitchen 5=Bar 6=Candles
+# --------------------------------------------------------
+globals:
+  - id: alarm_state             # 0 hidden · 1 ringing · 2 snoozed (derived from HA)
+    type: int
+    initial_value: '0'
+  - id: alarm_popup_up          # popup currently on screen
+    type: bool
+    initial_value: 'false'
+  - id: alarm_view_hidden       # "Hide until it rings again" (this screen only)
+    type: bool
+    initial_value: 'false'
+  - id: alarm_pulse
+    type: bool
+    initial_value: 'false'
+  - id: alarm_preview           # 0 = live from HA; 1/2 = preview (test hook only)
+    type: int
+    initial_value: '0'
+  - id: alarm_time_txt
+    type: std::string
+    initial_value: '"--:--"'
+  - id: alarm_ampm_txt
+    type: std::string
+    initial_value: '""'
+  - id: alarm_what_txt
+    type: std::string
+    initial_value: '""'
+  - id: alarm_start_txt
+    type: std::string
+    initial_value: '""'
+  - id: alarm_back_txt
+    type: std::string
+    initial_value: '""'
+  - id: night_active          # true while the faded clock is showing
+    type: bool
+    initial_value: 'false'
+  - id: night_armed           # idle countdown armed once after boot
+    type: bool
+    initial_value: 'false'
+  - id: current_mode
+    type: int
+    initial_value: '3'
+  - id: selected_light_idx
+    type: int
+    initial_value: '0'
+  - id: lights_bright_val
+    type: float
+    initial_value: '0'
+  - id: lights_bright_art
+    type: float
+    initial_value: '0'
+  - id: lights_bright_down
+    type: float
+    initial_value: '0'
+  - id: lights_bright_leds
+    type: float
+    initial_value: '0'
+  - id: lights_bright_accent
+    type: float
+    initial_value: '0'
+  - id: lights_bright_kitchen
+    type: float
+    initial_value: '0'
+  - id: lights_bright_bar
+    type: float
+    initial_value: '0'
+  - id: lights_bright_candles
+    type: float
+    initial_value: '0'
+  - id: target_temp_val
+    type: float
+    initial_value: '24.0'
+  # --- VINYL SPIN ---
+  - id: vinyl_angle          # current record rotation, in 0.1° units (0–3600)
+    type: int
+    initial_value: '0'
+  - id: media_playing        # true while media_player.club is "playing"
+    type: bool
+    initial_value: 'false'
+  - id: media_is_tv          # true while the media title is "TV"
+    type: bool
+    initial_value: 'false'
+  - id: home_menu_idx        # 0=Lights 1=Scenes 2=Media 3=Climate 4=Blinds
+    type: int
+    initial_value: '0'
+  - id: selected_scene       # 0=White 1=Bae 2=Night 3=Day 4=Club 5=Off
+    type: int
+    initial_value: '0'
+  - id: nav_level            # 0=Home wheel  1=section wheel  2=control page
+    type: int
+    initial_value: '0'
+  - id: blind_sel            # 0=Bedroom  1=Club  2=Club Sheer  3=All
+    type: int
+    initial_value: '0'
+  - id: pa_mode              # scratch: state captured at the start of an action
+    type: int
+    initial_value: '0'
+
+# --------------------------------------------------------
+# SCRIPTS
+# --------------------------------------------------------
+script:
+  # ══ WORK ALARM POPUP ═══════════════════════════════════════════════════════
+  # Recompute from HA every time either entity changes; never track our own state.
+  #   ringing off                  -> HIDDEN
+  #   ringing on, timer not active -> RINGING
+  #   ringing on, timer active     -> SNOOZED
+  - id: update_alarm
+    mode: restart
+    then:
+      - lambda: |-
+          bool ring = id(alarm_ringing).state;
+          bool snz = ring && id(alarm_snooze_state).state == "active";
+          int st = !ring ? 0 : (snz ? 2 : 1);
+          if (id(alarm_preview) == 1) st = 1;        // test hook
+          else if (id(alarm_preview) == 2) st = 2;
+          if (st != 2) id(alarm_view_hidden) = false;  // rings again -> show again
+          id(alarm_state) = st;
+      - if:
+          condition: {lambda: 'return id(alarm_state) == 1 || (id(alarm_state) == 2 && !id(alarm_view_hidden));'}
+          then:
+            - script.execute: alarm_show
+          else:
+            - script.execute: alarm_hide
+
+  - id: alarm_show
+    then:
+      - lambda: |-
+          id(alarm_popup_up) = true;
+          id(current_mode) = 9;     // inert: knob/button can't act on the page underneath
+          id(nav_level) = 0;
+      - if:
+          condition: {lambda: 'return id(alarm_state) == 1;'}
+          then:
+            # RINGING: wake the screen, even from the night clock
+            - lambda: 'id(night_active) = false;'
+            - lvgl.widget.hide: grp_night
+            - light.control: {id: display_backlight, brightness: 100%}
+      - script.execute: alarm_render
+      - lvgl.widget.show: grp_alarm
+      # Restart the idle countdown (relevant once snoozed: the screen may time out)
+      - if:
+          condition: {lambda: 'return id(alarm_state) == 2 && !id(night_active);'}
+          then: [{script.execute: screen_timeout_timer}]
+
+  - id: alarm_hide
+    then:
+      - if:
+          condition: {lambda: 'return id(alarm_popup_up);'}
+          then:
+            - lambda: 'id(alarm_popup_up) = false;'
+            - lvgl.widget.hide: grp_alarm
+            - script.stop: alarm_hold
+            - lvgl.bar.update: {id: alarm_hold_bar, value: 0}
+            - if:
+                condition: {lambda: 'return !id(night_active);'}
+                then:
+                  - script.execute: switch_to_home
+                  - script.execute: screen_timeout_timer
+
+  - id: alarm_render
+    then:
+      - if:
+          condition: {lambda: 'return id(alarm_state) == 1;'}
+          then:
+            - lvgl.obj.update: {id: alarm_icon_bg, bg_color: 0xF59E0B, bg_opa: 40%}
+            - lvgl.label.update: {id: alarm_icon_lbl, text_color: 0xF59E0B}
+            - lvgl.label.update: {id: alarm_caps_lbl, text: "ALARM", text_color: 0xF59E0B}
+            - lvgl.widget.show: btn_alarm_snooze
+            - lvgl.widget.hide: btn_alarm_hide
+            - lvgl.widget.hide: alarm_back_lbl
+          else:
+            - lvgl.obj.update: {id: alarm_icon_bg, bg_color: 0x3B82F6, bg_opa: 30%}
+            - lvgl.label.update: {id: alarm_icon_lbl, text_color: 0x60A5FA}
+            - lvgl.label.update: {id: alarm_caps_lbl, text: "SNOOZED", text_color: 0x60A5FA}
+            - lvgl.widget.hide: btn_alarm_snooze
+            - lvgl.widget.show: btn_alarm_hide
+            - lvgl.widget.show: alarm_back_lbl
+      - script.execute: alarm_refresh_text
+
+  # Clock, "what it's for", "Starts at", and the snooze countdown.
+  - id: alarm_refresh_text
+    then:
+      - lambda: |-
+          // ISO-8601 (with offset, or Z) -> epoch seconds
+          auto parse_iso = [](const std::string &s, time_t &out) -> bool {
+            int Y = 0, M = 0, D = 0, h = 0, m = 0, sec = 0;
+            if (sscanf(s.c_str(), "%d-%d-%d%*c%d:%d:%d", &Y, &M, &D, &h, &m, &sec) != 6) return false;
+            int off = 0;
+            size_t p = s.find_first_of("+-Zz", 19);
+            if (p != std::string::npos && s[p] != 'Z' && s[p] != 'z') {
+              int oh = 0, om = 0;
+              sscanf(s.c_str() + p + 1, "%d:%d", &oh, &om);
+              off = (oh * 3600 + om * 60) * (s[p] == '-' ? -1 : 1);
+            }
+            int y = Y - (M <= 2 ? 1 : 0);
+            int era = (y >= 0 ? y : y - 399) / 400;
+            int yoe = y - era * 400;
+            int doy = (153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1;
+            int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+            long days = (long) era * 146097L + doe - 719468L;
+            out = (time_t) (days * 86400L + h * 3600L + m * 60L + sec - off);
+            return true;
+          };
+          auto ok = [](const std::string &v) {
+            return !(v.empty() || v == "unknown" || v == "unavailable" || v == "None");
+          };
+          auto now = id(ha_time).now();
+
+          // current time, 12-hour
+          if (now.is_valid()) {
+            int h12 = now.hour % 12; if (h12 == 0) h12 = 12;
+            char b[12]; snprintf(b, sizeof(b), "%d:%02d", h12, now.minute);
+            id(alarm_time_txt) = b;
+            id(alarm_ampm_txt) = now.hour >= 12 ? "PM" : "AM";
+          } else { id(alarm_time_txt) = "--:--"; id(alarm_ampm_txt) = ""; }
+
+          // what it's for: summary · location
+          std::string w = ok(id(alarm_work_summary).state) ? id(alarm_work_summary).state : "";
+          if (ok(id(alarm_work_location).state))
+            w += w.empty() ? id(alarm_work_location).state : " · " + id(alarm_work_location).state;
+          if (w.empty() && id(alarm_preview) != 0) w = "Preview alarm · RSC";
+          id(alarm_what_txt) = w;
+
+          // Starts at (start time is UTC; show local)
+          time_t t;
+          if (parse_iso(id(alarm_work_start).state, t)) {
+            auto lt = ESPTime::from_epoch_local(t);
+            int h12 = lt.hour % 12; if (h12 == 0) h12 = 12;
+            char b[40]; snprintf(b, sizeof(b), "Starts at %d:%02d %s", h12, lt.minute, lt.hour >= 12 ? "PM" : "AM");
+            id(alarm_start_txt) = b;
+          } else {
+            id(alarm_start_txt) = id(alarm_preview) != 0 ? "Starts at 8:15 AM" : "";
+          }
+
+          // snooze countdown
+          id(alarm_back_txt) = "";
+          if (id(alarm_state) == 2) {
+            time_t f;
+            if (id(alarm_preview) == 2) id(alarm_back_txt) = "Back in 4:32";
+            else if (now.is_valid() && parse_iso(id(alarm_snooze_finish).state, f)) {
+              long rem = (long) f - (long) now.timestamp; if (rem < 0) rem = 0;
+              char b[24]; snprintf(b, sizeof(b), "Back in %ld:%02ld", rem / 60, rem % 60);
+              id(alarm_back_txt) = b;
+            }
+          }
+      - lvgl.label.update: {id: alarm_time_lbl, text: !lambda 'return id(alarm_time_txt);'}
+      - lvgl.label.update: {id: alarm_ampm_lbl, text: !lambda 'return id(alarm_ampm_txt);'}
+      - lvgl.label.update: {id: alarm_what_lbl, text: !lambda 'return id(alarm_what_txt);'}
+      - lvgl.label.update: {id: alarm_start_lbl, text: !lambda 'return id(alarm_start_txt);'}
+      - lvgl.label.update: {id: alarm_back_lbl, text: !lambda 'return id(alarm_back_txt);'}
+
+  # Hold-to-dismiss: a red fill sweeps across in ~0.9 s; letting go early cancels.
+  # Dismiss runs "stop for today" (also cancels the 2nd alarm), hence the hold.
+  - id: alarm_hold
+    mode: restart
+    then:
+      - repeat:
+          count: 18
+          then:
+            - lvgl.bar.update: {id: alarm_hold_bar, value: !lambda 'return (iteration + 1) * 100 / 18;'}
+            - delay: 50ms
+      - homeassistant.action: {action: script.turn_on, data: {entity_id: script.work_alarm_stop}}
+      - lvgl.bar.update: {id: alarm_hold_bar, value: 0}
+
+  - id: alarm_preview_timeout
+    mode: restart
+    then:
+      - delay: 25s
+      - lambda: 'id(alarm_preview) = 0;'
+      - script.execute: update_alarm
+  # --- SCREEN TIMEOUT ---
+  # --- IDLE -> NIGHT CLOCK ---------------------------------------------------
+  # Every input (touch, knob, button) calls this. If the night clock is
+  # showing it wakes the panel; otherwise it (re)starts the idle countdown.
+  - id: screen_timeout_timer
+    mode: restart
+    then:
+      - if:
+          condition: {lambda: 'return id(night_active);'}
+          then:
+            - script.execute: wake_from_night
+          else:
+            - script.execute: apply_awake_brightness
+      - delay: ${night_idle}
+      - if:
+          condition: {lambda: 'return id(party_mode).state;'}
+          then:
+            - if:
+                condition: {lambda: 'return id(current_mode) != 0;'}
+                then: [{script.execute: switch_to_media}]
+          else:
+          - if:
+              # hold the screen on while an alarm is ringing
+              condition: {lambda: 'return id(alarm_state) != 1;'}
+              then: [{script.execute: enter_night}]
+
+  # Awake brightness: full, or 50% while the TV is the source. Never touches
+  # the backlight while the night clock is up (a track change must not wake it).
+  - id: apply_awake_brightness
+    then:
+      - if:
+          condition: {lambda: 'return !id(night_active);'}
+          then:
+            - light.control:
+                id: display_backlight
+                brightness: !lambda 'return id(media_is_tv) ? 0.5f : 1.0f;'
+
+  - id: enter_night
+    then:
+      - if:
+          condition: {lambda: 'return !id(party_mode).state;'}
+          then:
+          - lambda: |-
+              id(night_active) = true;
+              id(current_mode) = 9;     // inert: knob/button handlers match no page
+              id(nav_level) = 0;
+          - script.execute: update_night_clock
+          - lvgl.widget.show: grp_night
+          - light.control:
+              id: display_backlight
+              brightness: !lambda 'return id(night_brightness).state / 100.0f;'
+
+  - id: wake_from_night
+    mode: restart
+    then:
+      - lambda: 'id(night_active) = false;'
+      - light.control:
+          id: display_backlight
+          brightness: !lambda 'return id(media_is_tv) ? 0.5f : 1.0f;'
+      # The waking touch / turn / press is swallowed: current_mode stays
+      # inert for a moment, then the panel returns to the home screen.
+      - delay: 350ms
+      - lvgl.widget.hide: grp_night
+      - if:
+          condition: {lambda: 'return id(alarm_popup_up);'}
+          then: [{lambda: 'id(current_mode) = 9;'}]
+          else: [{script.execute: switch_to_home}]
+
+  - id: update_night_clock
+    then:
+      - lvgl.label.update:
+          id: night_clock_lbl
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char b[8];
+            snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
+            return std::string(b);
+      - lvgl.label.update:
+          id: night_date_lbl
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid() || t.day_of_week < 1 || t.day_of_week > 7 ||
+                t.month < 1 || t.month > 12) return std::string("");
+            static const char *const days[] = {"Sunday", "Monday", "Tuesday",
+              "Wednesday", "Thursday", "Friday", "Saturday"};
+            static const char *const months[] = {"January", "February", "March",
+              "April", "May", "June", "July", "August", "September", "October",
+              "November", "December"};
+            char b[40];
+            snprintf(b, sizeof(b), "%s %d %s", days[t.day_of_week - 1],
+                     (int) t.day_of_month, months[t.month - 1]);
+            return std::string(b);
+
+  # ══════════════════════════════════════════════════════════════════
+  # NAVIGATION MODEL
+  #   nav_level 0 = Home wheel        (current_mode 3)
+  #   nav_level 1 = section wheel     (Media 0 / Lights 1 / Climate 2 /
+  #                                    Scenes 4 / Blinds 5)
+  #   nav_level 2 = control page      (Light control, Blind control)
+  #   Short press or centre touch -> primary_action
+  #   Long press                  -> go_back (one step up)
+  # ══════════════════════════════════════════════════════════════════
+  - id: hide_all_pages
+    then:
+      - lvgl.widget.hide: grp_home
+      - lvgl.widget.hide: grp_bc_home
+      - lvgl.widget.hide: grp_bc_lights
+      - lvgl.widget.hide: grp_bc_blinds
+      - lvgl.widget.hide: grp_lights_wheel
+      - lvgl.widget.hide: grp_light_ctl
+      - lvgl.widget.hide: grp_scenes
+      - lvgl.widget.hide: grp_climate
+      - lvgl.widget.hide: grp_blinds_wheel
+      - lvgl.widget.hide: grp_blind_ctl
+      - lvgl.widget.hide: grp_media_btns
+      - lvgl.widget.hide: grp_playlists
+      - lvgl.widget.hide: grp_speakers
+      - lvgl.widget.hide: vinyl_group
+      - lvgl.widget.hide: title_label
+      - lvgl.widget.hide: artist_label
+      - lvgl.widget.hide: center_btn
+
+  # --- PAGE: HOME ---
+  - id: switch_to_home
+    then:
+      - if:
+          condition: {lambda: 'return id(party_mode).state;'}
+          then: [{script.execute: switch_to_media}]
+          else:
+          - lambda: 'id(current_mode) = 3; id(nav_level) = 0;'
+          - script.execute: hide_all_pages
+          - lvgl.arc.update: {id: main_arc, value: 0}
+          - lvgl.widget.show: grp_home
+          - lvgl.widget.show: center_btn
+          - script.execute: update_clock
+          - script.execute: update_home_menu
+          - script.execute: update_home_wheel
+
+  # --- PAGE: LIGHTS (wheel of lights) ---
+  - id: switch_to_lights
+    then:
+      - lambda: 'id(current_mode) = 1; id(nav_level) = 1;'
+      - script.execute: hide_all_pages
+      - lvgl.arc.update: {id: main_arc, value: 0}
+      - lvgl.widget.show: grp_bc_home
+      - lvgl.widget.show: grp_lights_wheel
+      - lvgl.widget.show: center_btn
+      - script.execute: update_lights_wheel
+
+  # --- PAGE: LIGHT CONTROL ---
+  - id: enter_light_ctl
+    then:
+      - lambda: 'id(current_mode) = 1; id(nav_level) = 2;'
+      - script.execute: hide_all_pages
+      - lvgl.widget.show: grp_bc_lights
+      - lvgl.widget.show: grp_light_ctl
+      - lvgl.widget.show: center_btn
+      - lvgl.arc.update: {id: main_arc, indicator: {arc_color: 0x34E3D1}}
+      - script.execute: update_light_ui
+
+  # --- PAGE: SCENES ---
+  - id: switch_to_scenes
+    then:
+      - lambda: 'id(current_mode) = 4; id(nav_level) = 1;'
+      - script.execute: hide_all_pages
+      - lvgl.arc.update: {id: main_arc, value: 0}
+      - lvgl.widget.show: grp_bc_home
+      - lvgl.widget.show: grp_scenes
+      - lvgl.widget.show: center_btn
+      - script.execute: update_scenes_ui
+
+  # --- PAGE: CLIMATE ---
+  - id: switch_to_climate
+    then:
+      - lambda: 'id(current_mode) = 2; id(nav_level) = 1;'
+      - script.execute: hide_all_pages
+      - lvgl.widget.show: grp_bc_home
+      - lvgl.widget.show: grp_climate
+      - lvgl.widget.show: center_btn
+      - lvgl.arc.update:
+          id: main_arc
+          value: !lambda 'return (int)((id(target_temp_val) - 16.0f) * 100.0f / 14.0f);'
+      - script.execute: update_climate_wheel
+
+  # --- PAGE: BLINDS (wheel of two blinds) ---
+  - id: switch_to_blinds
+    then:
+      - lambda: 'id(current_mode) = 5; id(nav_level) = 1;'
+      - script.execute: hide_all_pages
+      - lvgl.arc.update: {id: main_arc, value: 0}
+      - lvgl.widget.show: grp_bc_home
+      - lvgl.widget.show: grp_blinds_wheel
+      - lvgl.widget.show: center_btn
+      - script.execute: update_blinds_wheel
+
+  # --- PAGE: BLIND CONTROL ---
+  - id: enter_blind_ctl
+    then:
+      - lambda: 'id(current_mode) = 5; id(nav_level) = 2;'
+      - script.execute: hide_all_pages
+      - lvgl.widget.show: grp_bc_blinds
+      - lvgl.widget.show: grp_blind_ctl
+      - lvgl.widget.show: center_btn
+      - lvgl.label.update:
+          id: blind_name_lbl
+          text: !lambda |-
+            switch (id(blind_sel)) {
+              case 0:  return std::string("BEDROOM");
+              case 1:  return std::string("CLUB");
+              case 2:  return std::string("CLUB SHEER");
+              default: return std::string("ALL BLINDS");
+            }
+      - lvgl.arc.update:
+          id: main_arc
+          indicator: {arc_color: 0x7DD3FC}
+          value: !lambda |-
+            float p;
+            switch (id(blind_sel)) {
+              case 0:  p = id(ha_bed_blinds_pos).state; break;
+              case 2:  p = id(ha_sheer_blinds_pos).state; break;
+              default: p = id(ha_blinds_position).state; break;
+            }
+            if (isnan(p)) return 0;
+            // Sheer reports inverted in HA
+            return id(blind_sel) == 2 ? 100 - (int)p : (int)p;
+      - script.execute: update_blind_state_lbl
+
+  # --- PAGE: MEDIA ---
+  - id: switch_to_media
+    then:
+      - lambda: 'id(current_mode) = 0; id(nav_level) = 1;'
+      - script.execute: hide_all_pages
+      - lvgl.arc.update:
+          id: main_arc
+          indicator: {arc_color: 0x34E3D1}
+          value: !lambda |-
+            float v = id(ha_media_volume).state;
+            return isnan(v) ? 50 : (int)(v * 100.0f);
+      - lvgl.widget.show: vinyl_group
+      - lvgl.widget.show: grp_media_btns
+      - lvgl.widget.show: center_btn
+      - lvgl.widget.show: title_label
+      - lvgl.widget.show: artist_label
+      - if:
+          condition: {lambda: 'return id(media_is_tv);'}
+          then:
+            - lvgl.widget.hide: title_label
+            - lvgl.widget.hide: artist_label
+
+  # --- PAGE: PLAYLISTS (Media sub-page) ---
+  - id: switch_to_playlists
+    then:
+      - lambda: 'id(current_mode) = 6; id(nav_level) = 2;'
+      - script.execute: hide_all_pages
+      - lvgl.arc.update: {id: main_arc, value: 0}
+      - lvgl.widget.show: grp_playlists
+
+  # --- PAGE: SPEAKERS (Media sub-page) ---
+  - id: switch_to_speakers
+    then:
+      - lambda: 'id(current_mode) = 7; id(nav_level) = 2;'
+      - script.execute: hide_all_pages
+      - lvgl.arc.update: {id: main_arc, value: 0}
+      - lvgl.widget.show: grp_speakers
+
+  # --- PRIMARY ACTION (short press / centre touch) ---
+  # State is captured into pa_mode first so a page switch inside one branch
+  # can't retrigger a later branch.
+  - id: primary_action
+    then:
+      - lambda: 'id(pa_mode) = id(current_mode) * 10 + id(nav_level);'
+      - if: {condition: {lambda: 'return id(pa_mode) == 30;'}, then: [{script.execute: open_home_selection}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 11;'}, then: [{script.execute: enter_light_ctl}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 12;'}, then: [{script.execute: call_light_toggle}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 41;'}, then: [{script.execute: activate_scene}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 1;'}, then: [{homeassistant.service: {service: media_player.media_play_pause, data: {entity_id: media_player.club}}}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 21;'}, then: [{homeassistant.service: {service: climate.toggle, data: {entity_id: climate.aircon}}}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 51;'}, then: [{script.execute: enter_blind_ctl}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 52 && id(blind_sel) == 0;'}, then: [{homeassistant.service: {service: cover.stop_cover, data: {entity_id: cover.smart_blinds_curtain}}}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 52 && id(blind_sel) == 1;'}, then: [{homeassistant.service: {service: cover.stop_cover, data: {entity_id: cover.blinds}}}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 52 && id(blind_sel) == 2;'}, then: [{homeassistant.service: {service: cover.stop_cover, data: {entity_id: cover.club_sheer_blinds}}}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 52 && id(blind_sel) == 3;'}, then: [{homeassistant.service: {service: cover.stop_cover, data: {entity_id: "cover.smart_blinds_curtain,cover.blinds,cover.club_sheer_blinds"}}}]}
+
+  # --- GO BACK (long press): control -> wheel -> home ---
+  - id: go_back
+    then:
+      - lambda: 'id(pa_mode) = id(current_mode) * 10 + id(nav_level);'
+      - if: {condition: {lambda: 'return id(pa_mode) == 12;'}, then: [{script.execute: switch_to_lights}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 52;'}, then: [{script.execute: switch_to_blinds}]}
+      - if: {condition: {lambda: 'return id(pa_mode) == 62 || id(pa_mode) == 72;'}, then: [{script.execute: switch_to_media}]}
+      - if: {condition: {lambda: 'return id(pa_mode) % 10 == 1;'}, then: [{script.execute: switch_to_home}]}
+
+  # --- HOME helpers ---
+  - id: update_home_menu
+    then:
+      - lvgl.label.update:
+          id: home_menu_lbl
+          text: !lambda |-
+            switch (id(home_menu_idx)) {
+              case 0: return std::string("LIGHTS");
+              case 1: return std::string("SCENES");
+              case 2: return std::string("MEDIA");
+              case 3: return std::string("CLIMATE");
+              default: return std::string("BLINDS");
+            }
+      # MEDIA wedge overrides the title with now-playing info
+      - script.execute: update_home_media
+
+  # Home page + MEDIA wedge: fade the record in behind the wheel and swap the
+  # "MEDIA" caption for the current track. Safe to call from anywhere — it
+  # checks the page itself and tidies up when Media isn't the selection.
+  - id: update_home_media
+    then:
+      - if:
+          condition: {lambda: 'return id(current_mode) == 3 && id(home_menu_idx) == 2;'}
+          then:
+            - lvgl.widget.show: grp_home_vinyl
+            # Only a playing (non-TV) source makes the record spin
+            - if:
+                condition: {lambda: 'return id(media_playing) && !id(media_is_tv);'}
+                then:
+                  - lvgl.widget.show: hv_sheen_outer
+                  - lvgl.widget.show: hv_sheen_inner
+                else:
+                  - lvgl.widget.hide: hv_sheen_outer
+                  - lvgl.widget.hide: hv_sheen_inner
+            - lvgl.label.update:
+                id: home_menu_lbl
+                text: !lambda |-
+                  if (id(media_is_tv)) return std::string("TV");
+                  std::string t = id(media_title).state;
+                  if (t.empty() || t == "unknown" || t == "unavailable" || t == "None")
+                    return std::string("MEDIA");
+                  return t;
+            - lvgl.label.update:
+                id: home_np_artist
+                text: !lambda |-
+                  if (id(media_is_tv)) return std::string("");
+                  std::string a = id(media_artist).state;
+                  if (a == "unknown" || a == "unavailable" || a == "None")
+                    return std::string("");
+                  return a;
+            - if:
+                condition:
+                  lambda: |-
+                    if (id(media_is_tv)) return false;
+                    std::string a = id(media_artist).state;
+                    return !(a.empty() || a == "unknown" || a == "unavailable" || a == "None");
+                then: [{lvgl.widget.show: home_np_artist}]
+                else: [{lvgl.widget.hide: home_np_artist}]
+          else:
+            - lvgl.widget.hide: grp_home_vinyl
+            - lvgl.widget.hide: home_np_artist
+
+  - id: open_home_selection
+    then:
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 0;'}, then: [{script.execute: switch_to_lights}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 1;'}, then: [{script.execute: switch_to_scenes}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 2;'}, then: [{script.execute: switch_to_media}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 3;'}, then: [{script.execute: switch_to_climate}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 4;'}, then: [{script.execute: switch_to_blinds}]}
+
+  # Selected wedge lights up in its neon colour; the rest keep a subtle tint.
+  - id: update_home_wheel
+    then:
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 0;'}, then: [{lvgl.arc.update: {id: home_arc0, arc_color: 0x8A6714}}], else: [{lvgl.arc.update: {id: home_arc0, arc_color: 0x241C08}}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 1;'}, then: [{lvgl.arc.update: {id: home_arc1, arc_color: 0x53347A}}], else: [{lvgl.arc.update: {id: home_arc1, arc_color: 0x1C1226}}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 2;'}, then: [{lvgl.arc.update: {id: home_arc2, arc_color: 0x14706A}}], else: [{lvgl.arc.update: {id: home_arc2, arc_color: 0x0A211F}}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 3;'}, then: [{lvgl.arc.update: {id: home_arc3, arc_color: 0x225780}}], else: [{lvgl.arc.update: {id: home_arc3, arc_color: 0x0D1E2C}}]}
+      - if: {condition: {lambda: 'return id(home_menu_idx) == 4;'}, then: [{lvgl.arc.update: {id: home_arc4, arc_color: 0x365878}}], else: [{lvgl.arc.update: {id: home_arc4, arc_color: 0x131E29}}]}
+
+  - id: update_clock
+    then:
+      - lvgl.label.update:
+          id: home_clock_lbl
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%2d:%02d", t.hour, t.minute);
+            return std::string(buf);
+
+  # --- LIGHTS wheel helper: highlight the cursor wedge + centre name ---
+  - id: update_lights_wheel
+    then:
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 0;'}, then: [{lvgl.arc.update: {id: lw_arc0, arc_color: 0xA87C24}}], else: [{lvgl.arc.update: {id: lw_arc0, arc_color: 0x4A3810}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 1;'}, then: [{lvgl.arc.update: {id: lw_arc1, arc_color: 0xA85C24}}], else: [{lvgl.arc.update: {id: lw_arc1, arc_color: 0x4A2C10}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 2;'}, then: [{lvgl.arc.update: {id: lw_arc2, arc_color: 0x963A78}}], else: [{lvgl.arc.update: {id: lw_arc2, arc_color: 0x421836}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 3;'}, then: [{lvgl.arc.update: {id: lw_arc3, arc_color: 0x6B51A8}}], else: [{lvgl.arc.update: {id: lw_arc3, arc_color: 0x2C2148}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 4;'}, then: [{lvgl.arc.update: {id: lw_arc4, arc_color: 0x5C8C44}}], else: [{lvgl.arc.update: {id: lw_arc4, arc_color: 0x24401C}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 5;'}, then: [{lvgl.arc.update: {id: lw_arc5, arc_color: 0x2E8C82}}], else: [{lvgl.arc.update: {id: lw_arc5, arc_color: 0x123C36}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 6;'}, then: [{lvgl.arc.update: {id: lw_arc6, arc_color: 0x96404E}}], else: [{lvgl.arc.update: {id: lw_arc6, arc_color: 0x441C22}}]}
+      - lvgl.label.update:
+          id: lw_name
+          text: !lambda |-
+            switch (id(selected_light_idx)) {
+              case 0: return std::string("Art");
+              case 1: return std::string("Downs");
+              case 2: return std::string("LEDs");
+              case 3: return std::string("Accent");
+              case 4: return std::string("Kitchen");
+              case 5: return std::string("Bar");
+              default: return std::string("Candles");
+            }
+
+  # --- SCENES wheel helper ---
+  - id: update_scenes_ui
+    then:
+      - if: {condition: {lambda: 'return id(selected_scene) == 0;'}, then: [{lvgl.arc.update: {id: scene_arc0, arc_color: 0xE2E8F0}}], else: [{lvgl.arc.update: {id: scene_arc0, arc_color: 0x969CA6}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 1;'}, then: [{lvgl.arc.update: {id: scene_arc1, arc_color: 0xB388E0}}], else: [{lvgl.arc.update: {id: scene_arc1, arc_color: 0x7E60A0}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 2;'}, then: [{lvgl.arc.update: {id: scene_arc2, arc_color: 0x6D8FD8}}], else: [{lvgl.arc.update: {id: scene_arc2, arc_color: 0x3A4A7A}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 3;'}, then: [{lvgl.arc.update: {id: scene_arc3, arc_color: 0xF0B44E}}], else: [{lvgl.arc.update: {id: scene_arc3, arc_color: 0xA88434}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 4;'}, then: [{lvgl.arc.update: {id: scene_arc4, arc_color: 0x4FE0D0}}], else: [{lvgl.arc.update: {id: scene_arc4, arc_color: 0x2E8C82}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 5;'}, then: [{lvgl.arc.update: {id: scene_arc5, arc_color: 0xE05656}}], else: [{lvgl.arc.update: {id: scene_arc5, arc_color: 0x803C3C}}]}
+      - lvgl.label.update:
+          id: scenes_name_lbl
+          text: !lambda |-
+            switch (id(selected_scene)) {
+              case 0: return std::string("WHITE");
+              case 1: return std::string("BAE");
+              case 2: return std::string("NIGHT");
+              case 3: return std::string("DAY");
+              case 4: return std::string("CLUB");
+              default: return std::string("OFF");
+            }
+
+  - id: activate_scene
+    then:
+      - if: {condition: {lambda: 'return id(selected_scene) == 0;'}, then: [{homeassistant.service: {service: scene.turn_on, data: {entity_id: scene.white}}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 1;'}, then: [{homeassistant.service: {service: script.turn_on, data: {entity_id: script.bae_2}}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 2;'}, then: [{homeassistant.service: {service: scene.turn_on, data: {entity_id: scene.night}}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 3;'}, then: [{homeassistant.service: {service: script.turn_on, data: {entity_id: script.day}}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 4;'}, then: [{homeassistant.service: {service: script.turn_on, data: {entity_id: script.club}}}]}
+      - if: {condition: {lambda: 'return id(selected_scene) == 5;'}, then: [{homeassistant.service: {service: script.turn_on, data: {entity_id: script.off}}}]}
+
+  # --- CLIMATE wheel helper: wedges light up from live HA state ---
+  - id: update_climate_wheel
+    then:
+      # HVAC modes keep their own hues
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "off";'}, then: [{lvgl.arc.update: {id: cw_arc0, arc_color: 0x6E6E7C}}], else: [{lvgl.arc.update: {id: cw_arc0, arc_color: 0x26262C}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "fan_only";'}, then: [{lvgl.arc.update: {id: cw_arc1, arc_color: 0x46A0B4}}], else: [{lvgl.arc.update: {id: cw_arc1, arc_color: 0x173A40}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "cool";'}, then: [{lvgl.arc.update: {id: cw_arc2, arc_color: 0x4A90E0}}], else: [{lvgl.arc.update: {id: cw_arc2, arc_color: 0x16304C}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "heat";'}, then: [{lvgl.arc.update: {id: cw_arc3, arc_color: 0xE04848}}], else: [{lvgl.arc.update: {id: cw_arc3, arc_color: 0x461818}}]}
+      # Fan speeds share one violet hue, brightness rising with speed
+      - if: {condition: {lambda: 'return id(ha_climate_fan).state == "low";'}, then: [{lvgl.arc.update: {id: cw_arc4, arc_color: 0x5B47A0}}], else: [{lvgl.arc.update: {id: cw_arc4, arc_color: 0x241C40}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_fan).state == "auto";'}, then: [{lvgl.arc.update: {id: cw_arc5, arc_color: 0x7A5FD0}}], else: [{lvgl.arc.update: {id: cw_arc5, arc_color: 0x2E2452}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_fan).state == "high";'}, then: [{lvgl.arc.update: {id: cw_arc6, arc_color: 0x9B7DF0}}], else: [{lvgl.arc.update: {id: cw_arc6, arc_color: 0x392C63}}]}
+      # Temperature arc takes the colour of the active mode
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "heat";'}, then: [{lvgl.arc.update: {id: main_arc, indicator: {arc_color: 0xE04848}}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "cool";'}, then: [{lvgl.arc.update: {id: main_arc, indicator: {arc_color: 0x4A90E0}}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "fan_only";'}, then: [{lvgl.arc.update: {id: main_arc, indicator: {arc_color: 0x46A0B4}}}]}
+      - if: {condition: {lambda: 'return id(ha_climate_state).state == "off";'}, then: [{lvgl.arc.update: {id: main_arc, indicator: {arc_color: 0x6E6E7C}}}]}
+
+  # --- BLINDS wheel helper ---
+  - id: update_blinds_wheel
+    then:
+      - if: {condition: {lambda: 'return id(blind_sel) == 0;'}, then: [{lvgl.arc.update: {id: bw_arc0, arc_color: 0x5568B4}}], else: [{lvgl.arc.update: {id: bw_arc0, arc_color: 0x232C52}}]}
+      - if: {condition: {lambda: 'return id(blind_sel) == 1;'}, then: [{lvgl.arc.update: {id: bw_arc1, arc_color: 0x2E8C82}}], else: [{lvgl.arc.update: {id: bw_arc1, arc_color: 0x123C36}}]}
+      - if: {condition: {lambda: 'return id(blind_sel) == 2;'}, then: [{lvgl.arc.update: {id: bw_arc2, arc_color: 0x7E60A0}}], else: [{lvgl.arc.update: {id: bw_arc2, arc_color: 0x35284A}}]}
+      - if: {condition: {lambda: 'return id(blind_sel) == 3;'}, then: [{lvgl.arc.update: {id: bw_arc3, arc_color: 0xA87C24}}], else: [{lvgl.arc.update: {id: bw_arc3, arc_color: 0x4A2C10}}]}
+
+  - id: update_blind_state_lbl
+    then:
+      - lvgl.label.update:
+          id: climate_blinds_state
+          text: !lambda |-
+            std::string s;
+            switch (id(blind_sel)) {
+              case 0:  s = id(ha_bed_blinds_state).state; break;
+              case 2:  s = id(ha_sheer_blinds_state).state; break;
+              default: s = id(ha_blinds_state).state; break;
+            }
+            for (auto &c : s) c = toupper((unsigned char)c);
+            // Sheer reports inverted in HA: flip the words back to reality
+            if (id(blind_sel) == 2) {
+              if      (s == "OPEN")    s = "CLOSED";
+              else if (s == "CLOSED")  s = "OPEN";
+              else if (s == "OPENING") s = "CLOSING";
+              else if (s == "CLOSING") s = "OPENING";
+            }
+            return s;
+
+  # --- LIGHT HELPERS ---
+  - id: update_light_ui
+    then:
+      - if:
+          condition: {lambda: 'return id(current_mode) == 1 && id(nav_level) == 2;'}
+          then:
+            - lambda: |-
+                if (id(selected_light_idx) == 0) {
+                  id(lights_bright_val) = id(lights_bright_art);
+                } else if (id(selected_light_idx) == 1) {
+                  id(lights_bright_val) = id(lights_bright_down);
+                } else if (id(selected_light_idx) == 2) {
+                  id(lights_bright_val) = id(lights_bright_leds);
+                } else if (id(selected_light_idx) == 3) {
+                  id(lights_bright_val) = id(lights_bright_accent);
+                } else if (id(selected_light_idx) == 4) {
+                  id(lights_bright_val) = id(lights_bright_kitchen);
+                } else if (id(selected_light_idx) == 5) {
+                  id(lights_bright_val) = id(lights_bright_bar);
+                } else if (id(selected_light_idx) == 6) {
+                  id(lights_bright_val) = id(lights_bright_candles);
+                }
+            - lvgl.arc.update:
+                id: main_arc
+                value: !lambda 'return (int)id(lights_bright_val);'
+            - lvgl.label.update:
+                id: lights_pct_label
+                text: !lambda |-
+                  char buf[8];
+                  snprintf(buf, sizeof(buf), "%d%%", (int)id(lights_bright_val));
+                  return buf;
+            - lvgl.label.update:
+                id: lights_name_lbl
+                text: !lambda |-
+                  if (id(selected_light_idx) == 0) return "ART PENDANTS";
+                  if (id(selected_light_idx) == 1) return "DOWNLIGHTS";
+                  if (id(selected_light_idx) == 2) return "LEDS";
+                  if (id(selected_light_idx) == 3) return "ACCENT";
+                  if (id(selected_light_idx) == 4) return "KITCHEN";
+                  if (id(selected_light_idx) == 5) return "BAR";
+                  if (id(selected_light_idx) == 6) return "CANDLES";
+                  return "";
+
+  - id: call_light_turn_on
+    mode: restart
+    then:
+      - delay: 200ms
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 0 && !std::isnan(id(lights_bright_art));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_art) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.art_group}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.art_group}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_art);'}
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 1 && !std::isnan(id(lights_bright_down));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_down) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.downlights}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.downlights}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_down);'}
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 2 && !std::isnan(id(lights_bright_leds));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_leds) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.club_led_group}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.club_led_group}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_leds);'}
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 3 && !std::isnan(id(lights_bright_accent));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_accent) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.club_accent_lights}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.club_accent_lights}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_accent);'}
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 4 && !std::isnan(id(lights_bright_kitchen));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_kitchen) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.kitchen}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.kitchen}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_kitchen);'}
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 5 && !std::isnan(id(lights_bright_bar));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_bar) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.bar_lights}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.bar_lights}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_bar);'}
+      - if:
+          condition: {lambda: 'return id(selected_light_idx) == 6 && !std::isnan(id(lights_bright_candles));'}
+          then:
+            - if:
+                condition: {lambda: 'return id(lights_bright_candles) <= 0;'}
+                then: [{homeassistant.service: {service: light.turn_off, data: {entity_id: light.kitchen_console_candles}}}]
+                else:
+                  - homeassistant.action:
+                      action: light.turn_on
+                      data: {entity_id: light.kitchen_console_candles}
+                      data_template: {brightness_pct: "{{ pct }}"}
+                      variables: {pct: !lambda 'return id(lights_bright_candles);'}
+
+  - id: call_light_toggle
+    then:
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 0;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.art_group}}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 1;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.downlights}}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 2;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.club_led_group}}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 3;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.club_accent_lights}}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 4;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.kitchen}}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 5;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.bar_lights}}}]}
+      - if: {condition: {lambda: 'return id(selected_light_idx) == 6;'}, then: [{homeassistant.service: {service: light.toggle, data: {entity_id: light.kitchen_console_candles}}}]}
+
+  - id: update_climate_temp
+    mode: restart
+    parameters:
+      new_temp: float
+    then:
+      - delay: 400ms
+      - homeassistant.action:
+          action: climate.set_temperature
+          data: {entity_id: climate.aircon}
+          data_template: {temperature: "{{ temp }}"}
+          variables:
+            temp: !lambda 'return new_temp;'
+
+
+# --------------------------------------------------------
+# VINYL SPIN LOOP
+# Rotates the centre label while music plays (Media page only).
+# --------------------------------------------------------
+interval:
+  # --- work alarm: pulse + clock + countdown twice a second while the popup is up
+  - interval: 500ms
+    then:
+      - if:
+          condition: {lambda: 'return id(alarm_popup_up);'}
+          then:
+            - script.execute: alarm_refresh_text
+            - if:
+                condition: {lambda: 'return id(alarm_state) == 1;'}
+                then:
+                  - lambda: 'id(alarm_pulse) = !id(alarm_pulse);'
+                  - if:
+                      condition: {lambda: 'return id(alarm_pulse);'}
+                      then: [{lvgl.obj.update: {id: alarm_icon_bg, bg_opa: 70%}}]
+                      else: [{lvgl.obj.update: {id: alarm_icon_bg, bg_opa: 25%}}]
+  # --- work alarm: while RINGING, keep the screen on even if someone hits sleep
+  - interval: 20s
+    then:
+      - if:
+          condition: {lambda: 'return id(alarm_state) == 1;'}
+          then:
+            - lambda: 'id(night_active) = false;'
+            - lvgl.widget.hide: grp_night
+            - light.control: {id: display_backlight, brightness: 100%}
+  # --- night clock: tick the faded clock, and arm the idle timer once after boot
+  - interval: 5s
+    then:
+      - if:
+          condition: {lambda: 'return id(night_active);'}
+          then: [{script.execute: update_night_clock}]
+      - if:
+          condition: {lambda: 'return !id(night_armed);'}
+          then:
+            - lambda: 'id(night_armed) = true;'
+            - script.execute: screen_timeout_timer
+  - interval: 50ms
+    then:
+      - if:
+          condition:
+            lambda: 'return id(media_playing) && id(current_mode) == 0 && !id(media_is_tv);'
+          then:
+            - lambda: |-
+                id(vinyl_angle) += 60;              // 6°/tick ≈ 120°/s (tune to taste)
+                if (id(vinyl_angle) >= 3600) id(vinyl_angle) -= 3600;
+            - lvgl.image.update:
+                id: media_logo
+                angle: !lambda 'return id(vinyl_angle);'
+
+# --------------------------------------------------------
+# CLOCK (Home page)
+# --------------------------------------------------------
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time:
+      - seconds: 0
+        minutes: '*'
+        then:
+          - script.execute: update_clock
+
+# --------------------------------------------------------
+# INPUTS
+# --------------------------------------------------------
+binary_sensor:
+  # --- auto-stay (party mode): lock to the Sonos page, no night clock
+  - platform: homeassistant
+    id: party_mode
+    entity_id: input_boolean.auto_stay
+    on_press:
+      then:
+        - if:
+            condition: {lambda: 'return id(night_active);'}
+            then:
+              - lvgl.widget.hide: grp_night
+              - lambda: 'id(night_active) = false;'
+        - script.execute: switch_to_media
+        - script.execute: screen_timeout_timer
+    on_release:
+      then:
+        - script.execute: switch_to_home
+        - script.execute: screen_timeout_timer
+  # --- work alarm (mirrors Home Assistant)
+  - platform: homeassistant
+    id: alarm_ringing
+    entity_id: input_boolean.work_alarm_ringing
+    on_state:
+      then:
+        - script.execute: update_alarm
+  - platform: gpio
+    id: rotary_button
+    pin:
+      pcf8574: pcf
+      number: 5
+      mode: INPUT
+      inverted: true
+    on_multi_click:
+      # --- DOUBLE CLICK: Media = next track ---
+      - timing:
+          - ON for at most 400ms
+          - OFF for at most 400ms
+          - ON for at most 400ms
+          - OFF for at least 400ms
+        then:
+          - script.execute: screen_timeout_timer
+          - if:
+              condition: {lambda: 'return id(current_mode) == 0;'}
+              then:
+                - homeassistant.action:
+                    action: media_player.media_next_track
+                    data: {entity_id: media_player.club}
+      # --- SINGLE CLICK: same as touching the centre ---
+      - timing:
+          - ON for 50ms to 400ms
+          - OFF for at least 400ms
+        then:
+          - script.execute: screen_timeout_timer
+          - script.execute: primary_action
+      # --- LONG PRESS: back one step ---
+      - timing:
+          - ON for at least 600ms
+        then:
+          - script.execute: screen_timeout_timer
+          - script.execute: go_back
+
+
+sensor:
+  - platform: rotary_encoder
+    id: rotary_dial
+    pin_a:
+      number: 4
+      mode: INPUT_PULLUP
+    pin_b:
+      number: 42
+      mode: INPUT_PULLUP
+    on_clockwise:
+      - script.execute: screen_timeout_timer
+      # Home: next wedge
+      - if:
+          condition: {lambda: 'return id(current_mode) == 3;'}
+          then:
+            - lambda: 'id(home_menu_idx) = (id(home_menu_idx) + 1) % 5;'
+            - script.execute: update_home_menu
+            - script.execute: update_home_wheel
+      # Lights wheel: next light
+      - if:
+          condition: {lambda: 'return id(current_mode) == 1 && id(nav_level) == 1;'}
+          then:
+            - lambda: 'id(selected_light_idx) = (id(selected_light_idx) + 1) % 7;'
+            - script.execute: update_lights_wheel
+      # Light control: brightness up
+      - if:
+          condition: {lambda: 'return id(current_mode) == 1 && id(nav_level) == 2;'}
+          then:
+            - lambda: |-
+                if (id(selected_light_idx) == 0) { id(lights_bright_art) += 10.0f; if (id(lights_bright_art) > 100.0f) id(lights_bright_art) = 100.0f; }
+                else if (id(selected_light_idx) == 1) { id(lights_bright_down) += 10.0f; if (id(lights_bright_down) > 100.0f) id(lights_bright_down) = 100.0f; }
+                else if (id(selected_light_idx) == 2) { id(lights_bright_leds) += 10.0f; if (id(lights_bright_leds) > 100.0f) id(lights_bright_leds) = 100.0f; }
+                else if (id(selected_light_idx) == 3) { id(lights_bright_accent) += 10.0f; if (id(lights_bright_accent) > 100.0f) id(lights_bright_accent) = 100.0f; }
+                else if (id(selected_light_idx) == 4) { id(lights_bright_kitchen) += 10.0f; if (id(lights_bright_kitchen) > 100.0f) id(lights_bright_kitchen) = 100.0f; }
+                else if (id(selected_light_idx) == 5) { id(lights_bright_bar) += 10.0f; if (id(lights_bright_bar) > 100.0f) id(lights_bright_bar) = 100.0f; }
+                else if (id(selected_light_idx) == 6) { id(lights_bright_candles) += 10.0f; if (id(lights_bright_candles) > 100.0f) id(lights_bright_candles) = 100.0f; }
+            - script.execute: update_light_ui
+            - script.execute: call_light_turn_on
+      # Scenes: next scene
+      - if:
+          condition: {lambda: 'return id(current_mode) == 4;'}
+          then:
+            - lambda: 'id(selected_scene) = (id(selected_scene) + 1) % 6;'
+            - script.execute: update_scenes_ui
+      # Media: volume up
+      - if:
+          condition: {lambda: 'return id(current_mode) == 0;'}
+          then:
+            - homeassistant.action:
+                action: media_player.volume_up
+                data: {entity_id: media_player.club}
+      # Climate: temperature up
+      - if:
+          condition: {lambda: 'return id(current_mode) == 2;'}
+          then:
+            - lambda: |-
+                id(target_temp_val) += 1.0f;
+                if (id(target_temp_val) > 30.0f) id(target_temp_val) = 30.0f;
+            - lvgl.arc.update:
+                id: main_arc
+                value: !lambda 'return (int)((id(target_temp_val) - 16.0f) * 100.0f / 14.0f);'
+            - lvgl.label.update:
+                id: target_temp_lbl
+                text: !lambda |-
+                  char buf[16];
+                  snprintf(buf, sizeof(buf), "%.0f°C", id(target_temp_val));
+                  return buf;
+            - script.execute:
+                id: update_climate_temp
+                new_temp: !lambda 'return id(target_temp_val);'
+      # Blinds wheel: other blind
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 1;'}
+          then:
+            - lambda: 'id(blind_sel) = (id(blind_sel) + 1) % 4;'
+            - script.execute: update_blinds_wheel
+      # Blind control: open  (sheer is motor-reversed, so it takes close_cover)
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 0;'}
+          then: [{homeassistant.service: {service: cover.open_cover, data: {entity_id: cover.smart_blinds_curtain}}}]
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 1;'}
+          then: [{homeassistant.service: {service: cover.open_cover, data: {entity_id: cover.blinds}}}]
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 2;'}
+          then: [{homeassistant.service: {service: cover.close_cover, data: {entity_id: cover.club_sheer_blinds}}}]
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 3;'}
+          then:
+            - homeassistant.action: {action: cover.open_cover,  data: {entity_id: "cover.smart_blinds_curtain,cover.blinds"}}
+            - homeassistant.action: {action: cover.close_cover, data: {entity_id: cover.club_sheer_blinds}}
+
+    on_anticlockwise:
+      - script.execute: screen_timeout_timer
+      # Home: previous wedge
+      - if:
+          condition: {lambda: 'return id(current_mode) == 3;'}
+          then:
+            - lambda: 'id(home_menu_idx) = (id(home_menu_idx) + 4) % 5;'
+            - script.execute: update_home_menu
+            - script.execute: update_home_wheel
+      # Lights wheel: previous light
+      - if:
+          condition: {lambda: 'return id(current_mode) == 1 && id(nav_level) == 1;'}
+          then:
+            - lambda: 'id(selected_light_idx) = (id(selected_light_idx) + 6) % 7;'
+            - script.execute: update_lights_wheel
+      # Light control: brightness down
+      - if:
+          condition: {lambda: 'return id(current_mode) == 1 && id(nav_level) == 2;'}
+          then:
+            - lambda: |-
+                if (id(selected_light_idx) == 0) { id(lights_bright_art) -= 10.0f; if (id(lights_bright_art) < 0.0f) id(lights_bright_art) = 0.0f; }
+                else if (id(selected_light_idx) == 1) { id(lights_bright_down) -= 10.0f; if (id(lights_bright_down) < 0.0f) id(lights_bright_down) = 0.0f; }
+                else if (id(selected_light_idx) == 2) { id(lights_bright_leds) -= 10.0f; if (id(lights_bright_leds) < 0.0f) id(lights_bright_leds) = 0.0f; }
+                else if (id(selected_light_idx) == 3) { id(lights_bright_accent) -= 10.0f; if (id(lights_bright_accent) < 0.0f) id(lights_bright_accent) = 0.0f; }
+                else if (id(selected_light_idx) == 4) { id(lights_bright_kitchen) -= 10.0f; if (id(lights_bright_kitchen) < 0.0f) id(lights_bright_kitchen) = 0.0f; }
+                else if (id(selected_light_idx) == 5) { id(lights_bright_bar) -= 10.0f; if (id(lights_bright_bar) < 0.0f) id(lights_bright_bar) = 0.0f; }
+                else if (id(selected_light_idx) == 6) { id(lights_bright_candles) -= 10.0f; if (id(lights_bright_candles) < 0.0f) id(lights_bright_candles) = 0.0f; }
+            - script.execute: update_light_ui
+            - script.execute: call_light_turn_on
+      # Scenes: previous scene
+      - if:
+          condition: {lambda: 'return id(current_mode) == 4;'}
+          then:
+            - lambda: 'id(selected_scene) = (id(selected_scene) + 5) % 6;'
+            - script.execute: update_scenes_ui
+      # Media: volume down
+      - if:
+          condition: {lambda: 'return id(current_mode) == 0;'}
+          then:
+            - homeassistant.action:
+                action: media_player.volume_down
+                data: {entity_id: media_player.club}
+      # Climate: temperature down
+      - if:
+          condition: {lambda: 'return id(current_mode) == 2;'}
+          then:
+            - lambda: |-
+                id(target_temp_val) -= 1.0f;
+                if (id(target_temp_val) < 16.0f) id(target_temp_val) = 16.0f;
+            - lvgl.arc.update:
+                id: main_arc
+                value: !lambda 'return (int)((id(target_temp_val) - 16.0f) * 100.0f / 14.0f);'
+            - lvgl.label.update:
+                id: target_temp_lbl
+                text: !lambda |-
+                  char buf[16];
+                  snprintf(buf, sizeof(buf), "%.0f°C", id(target_temp_val));
+                  return buf;
+            - script.execute:
+                id: update_climate_temp
+                new_temp: !lambda 'return id(target_temp_val);'
+      # Blinds wheel: other blind
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 1;'}
+          then:
+            - lambda: 'id(blind_sel) = (id(blind_sel) + 3) % 4;'
+            - script.execute: update_blinds_wheel
+      # Blind control: close  (sheer is motor-reversed, so it takes open_cover)
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 0;'}
+          then: [{homeassistant.service: {service: cover.close_cover, data: {entity_id: cover.smart_blinds_curtain}}}]
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 1;'}
+          then: [{homeassistant.service: {service: cover.close_cover, data: {entity_id: cover.blinds}}}]
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 2;'}
+          then: [{homeassistant.service: {service: cover.open_cover, data: {entity_id: cover.club_sheer_blinds}}}]
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 3;'}
+          then:
+            - homeassistant.action: {action: cover.close_cover, data: {entity_id: "cover.smart_blinds_curtain,cover.blinds"}}
+            - homeassistant.action: {action: cover.open_cover,  data: {entity_id: cover.club_sheer_blinds}}
+
+
+  # ── HA State Sensors ───────────────────────────────────────────────────────
+
+  - platform: homeassistant
+    id: ha_media_volume
+    entity_id: media_player.club
+    attribute: volume_level
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return !isnan(x) && id(current_mode) == 0;'}
+            then:
+              - lvgl.arc.update:
+                  id: main_arc
+                  value: !lambda 'return (int)(x * 100.0f);'
+
+  # LIGHT: Art Pendants
+  - platform: homeassistant
+    id: ha_pendants_bright
+    entity_id: light.art_group
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {}; 
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_art) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 0;'}
+            then: [{script.execute: update_light_ui}]
+
+  # LIGHT: Downlights (Ensure entity_id matches your HA)
+  - platform: homeassistant
+    id: ha_downlights_bright
+    entity_id: light.downlights
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {}; 
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_down) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 1;'}
+            then: [{script.execute: update_light_ui}]
+
+  # LIGHT: LEDs (Ensure entity_id matches your HA)
+  - platform: homeassistant
+    id: ha_leds_bright
+    entity_id: light.club_led_group
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {}; 
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_leds) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 2;'}
+            then: [{script.execute: update_light_ui}]
+
+  # LIGHT: Accent (Ensure entity_id matches your HA)
+  - platform: homeassistant
+    id: ha_accent_bright
+    entity_id: light.club_accent_lights
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {}; 
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_accent) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 3;'}
+            then: [{script.execute: update_light_ui}]
+
+  # LIGHT: Kitchen (Ensure entity_id matches your HA)
+  - platform: homeassistant
+    id: ha_kitchen_bright
+    entity_id: light.kitchen
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {}; 
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_kitchen) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 4;'}
+            then: [{script.execute: update_light_ui}]
+
+  # LIGHT: Bar
+  - platform: homeassistant
+    id: ha_bar_bright
+    entity_id: light.bar_lights
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {};
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_bar) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 5;'}
+            then: [{script.execute: update_light_ui}]
+
+  # LIGHT: Candles
+  - platform: homeassistant
+    id: ha_candles_bright
+    entity_id: light.kitchen_console_candles
+    attribute: brightness
+    filters:
+      - lambda: |-
+          if (isnan(x)) {
+            return {};
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: 'id(lights_bright_candles) = (x / 255.0f) * 100.0f;'
+        - if:
+            condition: {lambda: 'return id(selected_light_idx) == 6;'}
+            then: [{script.execute: update_light_ui}]
+
+  # BLINDS position — drives the outer arc on the Blind control page
+  - platform: homeassistant
+    id: ha_blinds_position
+    entity_id: cover.blinds
+    attribute: current_position
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return !isnan(x) && id(current_mode) == 5 && id(nav_level) == 2 && (id(blind_sel) == 1 || id(blind_sel) == 3);'}
+            then:
+              - lvgl.arc.update:
+                  id: main_arc
+                  value: !lambda 'return (int)x;'
+
+  - platform: homeassistant
+    id: ha_bed_blinds_pos
+    entity_id: cover.smart_blinds_curtain
+    attribute: current_position
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return !isnan(x) && id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 0;'}
+            then:
+              - lvgl.arc.update:
+                  id: main_arc
+                  value: !lambda 'return (int)x;'
+
+  - platform: homeassistant
+    id: ha_sheer_blinds_pos
+    entity_id: cover.club_sheer_blinds
+    attribute: current_position
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return !isnan(x) && id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 2;'}
+            then:
+              - lvgl.arc.update:
+                  id: main_arc
+                  value: !lambda 'return 100 - (int)x;'   # sheer reports inverted
+
+  # CLIMATE Sensors
+  - platform: homeassistant
+    id: ha_climate_temp
+    entity_id: climate.aircon
+    attribute: temperature
+    on_value:
+      then:
+        - lambda: 'id(target_temp_val) = isnan(x) ? 24.0f : x;'
+        - lvgl.label.update:
+            id: target_temp_lbl
+            text: !lambda |-
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.0f°C", id(target_temp_val));
+              return buf;
+        - if:
+            condition: {lambda: 'return id(current_mode) == 2;'}
+            then:
+              - lvgl.arc.update:
+                  id: main_arc
+                  value: !lambda 'return (int)((id(target_temp_val) - 16.0f) * 100.0f / 14.0f);'
+
+  - platform: homeassistant
+    id: ha_climate_current_temp
+    entity_id: climate.aircon
+    attribute: current_temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: current_temp_lbl
+            text: !lambda |-
+              if (isnan(x)) return "--- °C";
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.1f°C", x);
+              return buf;
+
+touchscreen:
+  - platform: cst816
+    id: touch_screen
+    on_touch:
+      - script.execute: screen_timeout_timer
+
+# --------------------------------------------------------
+# DISPLAY & FONTS
+# --------------------------------------------------------
+spi:
+  clk_pin: 2
+  mosi_pin: 1
+
+display:
+  - platform: st7701s
+    id: my_display
+    update_interval: 50ms
+    spi_mode: MODE3
+    dimensions:
+      width: 480
+      height: 480
+    cs_pin: 16
+    de_pin: 40
+    hsync_pin: 15
+    vsync_pin: 7
+    pclk_pin: 41
+    data_pins:
+      red: [46, 3, 8, 18, 17]
+      green: [14, 13, 12, 11, 10, 9]
+      blue: [5, 45, 48, 47, 21]
+    pclk_frequency: 12MHz
+    init_sequence:
+      - [0x01]
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x10]
+      - [0xCC, 0x10]
+      - [0xCD, 0x08]
+      - [0xB0, 0x02, 0x13, 0x1B, 0x0D, 0x10, 0x05, 0x08, 0x07, 0x07, 0x24, 0x04, 0x11, 0x0E, 0x2C, 0x33, 0x1D]
+      - [0xB1, 0x05, 0x13, 0x1B, 0x0D, 0x11, 0x05, 0x08, 0x07, 0x07, 0x24, 0x04, 0x11, 0x0E, 0x2C, 0x33, 0x1D]
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x11]
+      - [0xB0, 0x5D]
+      - [0xB1, 0x43]
+      - [0xB2, 0x81]
+      - [0xB3, 0x80]
+      - [0xB5, 0x43]
+      - [0xB7, 0x85]
+      - [0xB8, 0x20]
+      - [0xC1, 0x78]
+      - [0xC2, 0x78]
+      - [0xD0, 0x88]
+      - [0xE0, 0x00, 0x00, 0x02]
+      - [0xE1, 0x03, 0xA0, 0x00, 0x00, 0x04, 0xA0, 0x00, 0x00, 0x00, 0x20, 0x20]
+      - [0xE2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+      - [0xE3, 0x00, 0x00, 0x11, 0x00]
+      - [0xE4, 0x22, 0x00]
+      - [0xE5, 0x05, 0xEC, 0xA0, 0xA0, 0x07, 0xEE, 0xA0, 0xA0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+      - [0xE6, 0x00, 0x00, 0x11, 0x00]
+      - [0xE7, 0x22, 0x00]
+      - [0xE8, 0x06, 0xED, 0xA0, 0xA0, 0x08, 0xEF, 0xA0, 0xA0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+      - [0xEB, 0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x00]
+      - [0xED, 0xFF, 0xFF, 0xFF, 0xBA, 0x0A, 0xBF, 0x45, 0xFF, 0xFF, 0x54, 0xFB, 0xA0, 0xAB, 0xFF, 0xFF, 0xFF]
+      - [0xEF, 0x10, 0x0D, 0x04, 0x08, 0x3F, 0x1F]
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x13]
+      - [0xEF, 0x08]
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x00]
+      - [0x36, 0x00]
+      - [0x3A, 0x60]
+      - [0x11]
+      - [0x29]
+
+font:
+  - file: "gfonts://Roboto@300"
+    id: alarm_time
+    size: 72
+    bpp: 4
+    glyphs: "0123456789:- "
+  - file: "gfonts://Roboto@500"
+    id: alarm_t24
+    size: 24
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
+  - file: "gfonts://Roboto"
+    id: alarm_t18
+    size: 18
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
+  - file: "gfonts://Roboto@700"
+    id: alarm_btn
+    size: 20
+    bpp: 4
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
+  - file: "gfonts://Roboto@500"
+    id: roboto_night
+    size: 132
+    bpp: 4
+    glyphs: "0123456789:- "
+  - file: "gfonts://Roboto"
+    id: roboto_48
+    size: 48
+    bpp: 4
+  - file: "gfonts://Roboto@700"
+    id: roboto_32_bold
+    size: 32
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: roboto_24
+    size: 24
+    bpp: 4
+  - file: "gfonts://Roboto"
+    id: roboto_18
+    size: 18
+    bpp: 4
+  - file: "gfonts://Roboto@500"
+    id: roboto_14
+    size: 14
+    bpp: 4
+  - file: "gfonts://Roboto@700"
+    id: roboto_18_bold
+    size: 18
+    bpp: 4
+  - file: "gfonts://Roboto@700"
+    id: roboto_clock
+    size: 58
+    bpp: 4
+    glyphs: "0123456789:- "
+
+text_sensor:
+  # --- work alarm (mirrors Home Assistant)
+  - platform: homeassistant
+    id: alarm_snooze_state
+    entity_id: timer.work_alarm_snooze
+    on_value:
+      then:
+        - script.execute: update_alarm
+  - platform: homeassistant
+    id: alarm_snooze_finish
+    entity_id: timer.work_alarm_snooze
+    attribute: finishes_at
+  - platform: homeassistant
+    id: alarm_work_start
+    entity_id: sensor.work_start
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(alarm_popup_up);'}
+            then: [{script.execute: alarm_refresh_text}]
+  - platform: homeassistant
+    id: alarm_work_summary
+    entity_id: sensor.work_start
+    attribute: summary
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(alarm_popup_up);'}
+            then: [{script.execute: alarm_refresh_text}]
+  - platform: homeassistant
+    id: alarm_work_location
+    entity_id: sensor.work_start
+    attribute: location
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(alarm_popup_up);'}
+            then: [{script.execute: alarm_refresh_text}]
+  - platform: homeassistant
+    id: media_title
+    entity_id: media_player.club
+    attribute: media_title
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: title_label
+            text: !lambda "return x;"
+        # "TV" title -> stop the record spinning, hold the screen at 50%,
+        # and hide the title/artist labels (no useful metadata for TV).
+        - lambda: 'id(media_is_tv) = (x == std::string("TV"));'
+        - if:
+            condition: {lambda: 'return id(media_is_tv);'}
+            then:
+              - lvgl.widget.hide: title_label
+              - lvgl.widget.hide: artist_label
+            else:
+              - if:
+                  condition: {lambda: 'return id(current_mode) == 0;'}
+                  then:
+                    - lvgl.widget.show: title_label
+                    - lvgl.widget.show: artist_label
+        # Keep the Home page's now-playing caption in step
+        - script.execute: update_home_media
+        - script.execute: apply_awake_brightness
+  - platform: homeassistant
+    id: media_artist
+    entity_id: media_player.club
+    attribute: media_artist
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: artist_label
+            text: !lambda "return x;"
+        - script.execute: update_home_media
+
+  # Track play/pause state so the record only spins while music is playing
+  - platform: homeassistant
+    id: media_state
+    entity_id: media_player.club
+    on_value:
+      then:
+        - lambda: 'id(media_playing) = (x == std::string("playing"));'
+        # Start/stop the Home page record sheen with playback
+        - script.execute: update_home_media
+
+  - platform: homeassistant
+    id: ha_climate_state
+    entity_id: climate.aircon
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: climate_state_lbl
+            text: !lambda "return x;"
+        - if:
+            condition: {lambda: 'return id(current_mode) == 2;'}
+            then: [{script.execute: update_climate_wheel}]
+
+  # CLIMATE fan mode — lights the matching fan wedge on the Climate wheel
+  - platform: homeassistant
+    id: ha_climate_fan
+    entity_id: climate.aircon
+    attribute: fan_mode
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(current_mode) == 2;'}
+            then: [{script.execute: update_climate_wheel}]
+
+  # BLINDS state — big OPEN / CLOSED / OPENING readout on the Blind control page
+  - platform: homeassistant
+    id: ha_blinds_state
+    entity_id: cover.blinds
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && (id(blind_sel) == 1 || id(blind_sel) == 3);'}
+            then: [{script.execute: update_blind_state_lbl}]
+
+  - platform: homeassistant
+    id: ha_bed_blinds_state
+    entity_id: cover.smart_blinds_curtain
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 0;'}
+            then: [{script.execute: update_blind_state_lbl}]
+
+  - platform: homeassistant
+    id: ha_sheer_blinds_state
+    entity_id: cover.club_sheer_blinds
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(current_mode) == 5 && id(nav_level) == 2 && id(blind_sel) == 2;'}
+            then: [{script.execute: update_blind_state_lbl}]
+
+# --------------------------------------------------------
+# LVGL — SINGLE PAGE
+# -----------------
+lvgl:
+  # Night clock lives on LVGL's top layer so it is always above every page.
+  top_layer:
+    widgets:
+      - obj:
+          id: grp_alarm
+          hidden: true
+          align: center
+          width: 480
+          height: 480
+          bg_color: 0x000000
+          bg_opa: 92%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollbar_mode: "OFF"
+          widgets:
+            # panel (inset 14 px from the rim). The scrim itself swallows every tap.
+            - obj:
+                align: center
+                width: 452
+                height: 452
+                radius: 226
+                bg_color: 0x10151C
+                border_width: 2
+                border_color: 0x27313D
+                pad_all: 0
+                clickable: false
+                scrollbar_mode: "OFF"
+            - obj:
+                id: alarm_icon_bg
+                align: center
+                y: -180
+                width: 60
+                height: 60
+                radius: 30
+                bg_color: 0xF59E0B
+                bg_opa: 40%
+                border_width: 0
+                pad_all: 0
+                clickable: false
+                scrollbar_mode: "OFF"
+            - label:
+                id: alarm_icon_lbl
+                text: "\uF0F3"
+                align: center
+                y: -180
+                text_font: montserrat_28
+                text_color: 0xF59E0B
+            - label:
+                id: alarm_caps_lbl
+                text: "ALARM"
+                align: center
+                y: -136
+                text_font: alarm_btn
+                text_letter_space: 4
+                text_color: 0xF59E0B
+            - label:
+                id: alarm_time_lbl
+                text: "--:--"
+                align: center
+                y: -78
+                text_font: alarm_time
+                text_color: 0xF1F5F9
+            - label:
+                id: alarm_ampm_lbl
+                text: ""
+                align: center
+                y: -24
+                text_font: alarm_t18
+                text_color: 0x94A3B8
+            - label:
+                id: alarm_what_lbl
+                text: ""
+                align: center
+                y: 8
+                width: 360
+                long_mode: DOT
+                text_align: center
+                text_font: alarm_t24
+                text_color: 0xE2E8F0
+            - label:
+                id: alarm_start_lbl
+                text: ""
+                align: center
+                y: 37
+                text_font: alarm_t18
+                text_color: 0x94A3B8
+            - label:
+                id: alarm_back_lbl
+                text: ""
+                hidden: true
+                align: center
+                y: 64
+                text_font: alarm_t24
+                text_color: 0x60A5FA
+            # RINGING: one big tap
+            - button:
+                id: btn_alarm_snooze
+                align: center
+                y: 96
+                width: 300
+                height: 60
+                radius: 30
+                bg_color: 0xF59E0B
+                shadow_width: 0
+                border_width: 0
+                pad_all: 0
+                on_click:
+                  - homeassistant.action: {action: script.turn_on, data: {entity_id: script.work_alarm_snooze}}
+                widgets:
+                  - label: {text: "Snooze 5 min", align: center, text_font: alarm_btn, text_color: 0x1A1205}
+            # SNOOZED: quiet text button, hides the popup on this screen only
+            - button:
+                id: btn_alarm_hide
+                hidden: true
+                align: center
+                y: 100
+                width: 280
+                height: 48
+                radius: 24
+                bg_opa: 0
+                shadow_width: 0
+                border_width: 0
+                pad_all: 0
+                on_click:
+                  - lambda: 'id(alarm_view_hidden) = true;'
+                  - script.execute: update_alarm
+                widgets:
+                  - label: {text: "Hide until it rings again", align: center, text_font: alarm_t18, text_color: 0x8FA3BF}
+            # ALWAYS: hold to dismiss
+            - button:
+                id: btn_alarm_dismiss
+                align: center
+                y: 172
+                width: 250
+                height: 60
+                radius: 30
+                bg_color: 0x3A1616
+                border_width: 2
+                border_color: 0x7F2A2A
+                shadow_width: 0
+                pad_all: 0
+                on_press:
+                  - script.execute: alarm_hold
+                on_release:
+                  - script.stop: alarm_hold
+                  - lvgl.bar.update: {id: alarm_hold_bar, value: 0, animated: true}
+                on_press_lost:
+                  - script.stop: alarm_hold
+                  - lvgl.bar.update: {id: alarm_hold_bar, value: 0, animated: true}
+                widgets:
+                  - bar:
+                      id: alarm_hold_bar
+                      align: center
+                      width: 244
+                      height: 54
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      clickable: false
+                      radius: 27
+                      bg_opa: 0
+                      indicator:
+                        bg_color: 0xB91C1C
+                        bg_opa: 85%
+                        radius: 27
+                  - label:
+                      text: "Hold to dismiss for today"
+                      align: center
+                      width: 200
+                      text_align: center
+                      text_font: alarm_btn
+                      text_color: 0xFCA5A5
+      - obj:
+          id: grp_night
+          hidden: true
+          align: center
+          width: 480
+          height: 480
+          bg_color: 0x000000
+          bg_opa: COVER
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollbar_mode: "OFF"
+          widgets:
+            - label:
+                id: night_clock_lbl
+                text: "--:--"
+                align: center
+                y: -26
+                text_font: roboto_night
+                text_color: ${night_clock_color}
+            - label:
+                id: night_date_lbl
+                text: ""
+                align: center
+                y: 76
+                text_font: roboto_24
+                text_color: ${night_date_color}
+  displays:
+    - my_display
+  touchscreens:
+    - touch_screen
+  bg_color: 0x000000
+  text_color: 0xE2E8F0
+  default_font: roboto_18
+  theme:
+    button:
+      bg_color: 0x334155
+      radius: 16
+      shadow_width: 8
+      shadow_ofs_y: 3
+      shadow_opa: 35%
+      shadow_color: 0x000000
+    label:
+      text_font: roboto_18
+      text_color: 0xE2E8F0
+
+  pages:
+    - id: main_page
+      pad_all: 0
+      border_width: 0
+      bg_color: 0x000000
+      scrollbar_mode: "OFF"
+      widgets:
+
+        # ── MAIN VALUE ARC (outermost ring: brightness / temp / volume / blind pos)
+        - arc:
+            id: main_arc
+            align: center
+            width: 470
+            height: 470
+            min_value: 0
+            max_value: 100
+            value: 0
+            bg_opa: 0
+            arc_color: 0x0E1414
+            arc_width: 15
+            indicator:
+              arc_color: 0x34E3D1
+              arc_width: 15
+            on_value:
+              then:
+                - if:
+                    condition: {lambda: 'return id(current_mode) == 0;'}
+                    then:
+                      - homeassistant.action:
+                          action: media_player.volume_set
+                          data: {entity_id: media_player.club}
+                          data_template: {volume_level: "{{ vol }}"}
+                          variables: {vol: !lambda 'return x / 100.0f;'}
+                - if:
+                    condition: {lambda: 'return id(current_mode) == 1 && id(nav_level) == 2;'}
+                    then:
+                      - lambda: |-
+                          if (id(selected_light_idx) == 0) id(lights_bright_art) = x;
+                          else if (id(selected_light_idx) == 1) id(lights_bright_down) = x;
+                          else if (id(selected_light_idx) == 2) id(lights_bright_leds) = x;
+                          else if (id(selected_light_idx) == 3) id(lights_bright_accent) = x;
+                          else if (id(selected_light_idx) == 4) id(lights_bright_kitchen) = x;
+                          else if (id(selected_light_idx) == 5) id(lights_bright_bar) = x;
+                          else if (id(selected_light_idx) == 6) id(lights_bright_candles) = x;
+                      - script.execute: update_light_ui
+                      - script.execute: call_light_turn_on
+                - if:
+                    condition: {lambda: 'return id(current_mode) == 2;'}
+                    then:
+                      - lambda: 'id(target_temp_val) = roundf((x * 14.0f / 100.0f) + 16.0f);'
+                      - lvgl.label.update:
+                          id: target_temp_lbl
+                          text: !lambda |-
+                            char buf[16];
+                            snprintf(buf, sizeof(buf), "%.0f°C", id(target_temp_val));
+                            return buf;
+                      - script.execute:
+                          id: update_climate_temp
+                          new_temp: !lambda 'return id(target_temp_val);'
+
+        # ── HOME WHEEL (level 0) ─────────────────────────────────────────────
+        # Wedge size reflects prominence: Lights largest, Scenes smallest.
+        - obj:
+            id: grp_home
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {id: home_arc0, align: center, width: 430, height: 430, start_angle: 1,   end_angle: 83,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x8A6714, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: home_arc1, align: center, width: 430, height: 430, start_angle: 85,  end_angle: 145, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x1C1226, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: home_arc2, align: center, width: 430, height: 430, start_angle: 147, end_angle: 219, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x0A211F, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: home_arc3, align: center, width: 430, height: 430, start_angle: 221, end_angle: 293, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x0D1E2C, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: home_arc4, align: center, width: 430, height: 430, start_angle: 295, end_angle: 359, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x131E29, arc_width: 100, indicator: {arc_width: 0}}
+              # ── GHOST RECORD (shown only while the MEDIA wedge is picked) ─
+              # Sits above the wedges but below the icons/clock: a dark veil
+              # dims the wheel just enough for the grooves to read, and the
+              # icons + centre text stay full brightness on top of it.
+              # No wordmark here — the clock lives in the label area.
+              - obj:
+                  id: grp_home_vinyl
+                  hidden: true
+                  align: center
+                  width: 430
+                  height: 430
+                  radius: 215
+                  bg_color: 0x000000
+                  bg_opa: 45%
+                  border_width: 0
+                  pad_all: 0
+                  clickable: false
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    # Grooves: faint light rings over the dimmed wheel
+                    - obj: {align: center, width: 418, height: 418, radius: 209, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 14%, pad_all: 0}
+                    - obj: {align: center, width: 390, height: 390, radius: 195, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 11%, pad_all: 0}
+                    - obj: {align: center, width: 362, height: 362, radius: 181, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 11%, pad_all: 0}
+                    - obj: {align: center, width: 334, height: 334, radius: 167, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 11%, pad_all: 0}
+                    - obj: {align: center, width: 306, height: 306, radius: 153, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 11%, pad_all: 0}
+                    - obj: {align: center, width: 278, height: 278, radius: 139, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 11%, pad_all: 0}
+                    - obj: {align: center, width: 250, height: 250, radius: 125, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 11%, pad_all: 0}
+                    - obj: {align: center, width: 222, height: 222, radius: 111, bg_opa: 0, border_width: 1, border_color: 0xCBD5E1, border_opa: 14%, pad_all: 0}
+                    # Two highlights sweeping the grooves at one shared speed:
+                    # the "it's spinning" tell. Hidden while paused.
+                    - spinner:
+                        id: hv_sheen_outer
+                        hidden: true
+                        align: center
+                        width: 348
+                        height: 348
+                        clickable: false
+                        spin_time: 3s
+                        arc_length: 55
+                        arc_width: 3
+                        arc_opa: 0%
+                        indicator:
+                          arc_color: 0xE2E8F0
+                          arc_width: 3
+                          arc_opa: 30%
+                    - spinner:
+                        id: hv_sheen_inner
+                        hidden: true
+                        align: center
+                        width: 264
+                        height: 264
+                        clickable: false
+                        spin_time: 3s
+                        arc_length: 30
+                        arc_width: 2
+                        arc_opa: 0%
+                        indicator:
+                          arc_color: 0x34E3D1
+                          arc_width: 2
+                          arc_opa: 28%
+                    # Record label: fills the wheel's centre hole, tinted with
+                    # the Media wedge colour, dark enough to read text over.
+                    - obj:
+                        align: center
+                        width: 210
+                        height: 210
+                        radius: 105
+                        bg_color: 0x14B8A6
+                        bg_opa: 20%
+                        border_width: 2
+                        border_color: 0x0E7C70
+                        border_opa: 45%
+                        pad_all: 0
+
+              - image: {id: home_ico0, src: ico_lights,  align: center, x: 123,  y: 110}
+              - image: {id: home_ico1, src: ico_scenes,  align: center, x: -70,  y: 150}
+              - image: {id: home_ico2, src: ico_media,   align: center, x: -165, y: -9}
+              - image: {id: home_ico3, src: ico_climate, align: center, x: -37,  y: -161}
+              - image: {id: home_ico4, src: ico_blinds,  align: center, x: 138,  y: -90}
+              - label:
+                  id: home_clock_lbl
+                  text: "--:--"
+                  align: center
+                  y: -22
+                  text_font: roboto_clock
+                  text_color: 0xF1F5F9
+              # Section name, or the current track title while MEDIA is picked
+              - label:
+                  id: home_menu_lbl
+                  text: "LIGHTS"
+                  align: center
+                  y: 30
+                  width: 220
+                  long_mode: SCROLL_CIRCULAR
+                  text_align: center
+                  text_font: roboto_24
+                  text_color: 0x34E3D1
+              # Artist line — only ever shown under a now-playing title
+              - label:
+                  id: home_np_artist
+                  text: ""
+                  hidden: true
+                  align: center
+                  y: 60
+                  width: 200
+                  long_mode: SCROLL_CIRCULAR
+                  text_align: center
+                  text_font: roboto_14
+                  text_color: 0x94A3B8
+              - button: {id: hb0, align: center, x: 123,  y: 110,  width: 120, height: 92, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(home_menu_idx) = 0;'}, {script.execute: switch_to_lights}]}
+              - button: {id: hb1, align: center, x: -70,  y: 150,  width: 100, height: 78, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(home_menu_idx) = 1;'}, {script.execute: switch_to_scenes}]}
+              - button: {id: hb2, align: center, x: -165, y: -9,   width: 110, height: 88, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(home_menu_idx) = 2;'}, {script.execute: switch_to_media}]}
+              - button: {id: hb3, align: center, x: -37,  y: -161, width: 110, height: 88, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(home_menu_idx) = 3;'}, {script.execute: switch_to_climate}]}
+              - button: {id: hb4, align: center, x: 138,  y: -90,  width: 110, height: 84, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(home_menu_idx) = 4;'}, {script.execute: switch_to_blinds}]}
+
+        # ── BREADCRUMB RINGS (thin ring of the parent level's colours) ───────
+        - obj:
+            id: grp_bc_home
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {align: center, width: 190, height: 190, start_angle: 1,   end_angle: 83,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x8A6714, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 85,  end_angle: 145, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x53347A, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 147, end_angle: 219, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x14706A, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 221, end_angle: 293, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x225780, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 295, end_angle: 359, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x365878, arc_width: 7, indicator: {arc_width: 0}}
+
+        - obj:
+            id: grp_bc_lights
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {align: center, width: 190, height: 190, start_angle: 1,   end_angle: 57,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0xA87C24, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 59,  end_angle: 111, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0xA85C24, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 113, end_angle: 163, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x963A78, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 165, end_angle: 215, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x6B51A8, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 217, end_angle: 265, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x5C8C44, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 267, end_angle: 315, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x2E8C82, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 317, end_angle: 359, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x96404E, arc_width: 7, indicator: {arc_width: 0}}
+
+        - obj:
+            id: grp_bc_blinds
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {align: center, width: 190, height: 190, start_angle: 2,   end_angle: 88,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x5568B4, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 92,  end_angle: 178, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x2E8C82, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 182, end_angle: 268, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x7E60A0, arc_width: 7, indicator: {arc_width: 0}}
+              - arc: {align: center, width: 190, height: 190, start_angle: 272, end_angle: 358, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0xA87C24, arc_width: 7, indicator: {arc_width: 0}}
+
+        # ── LIGHTS WHEEL (level 1) — Art largest, Candles smallest ───────────
+        - obj:
+            id: grp_lights_wheel
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {id: lw_arc0, align: center, width: 430, height: 430, start_angle: 1,   end_angle: 57,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0xA87C24, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: lw_arc1, align: center, width: 430, height: 430, start_angle: 59,  end_angle: 111, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x4A2C10, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: lw_arc2, align: center, width: 430, height: 430, start_angle: 113, end_angle: 163, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x421836, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: lw_arc3, align: center, width: 430, height: 430, start_angle: 165, end_angle: 215, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x2C2148, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: lw_arc4, align: center, width: 430, height: 430, start_angle: 217, end_angle: 265, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x24401C, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: lw_arc5, align: center, width: 430, height: 430, start_angle: 267, end_angle: 315, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x123C36, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: lw_arc6, align: center, width: 430, height: 430, start_angle: 317, end_angle: 359, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x441C22, arc_width: 100, indicator: {arc_width: 0}}
+              - label:
+                  id: lw_title
+                  text: "LIGHTS"
+                  align: center
+                  y: -14
+                  text_font: roboto_24
+                  text_color: 0xC79A3A
+              - label:
+                  id: lw_name
+                  text: "Art"
+                  align: center
+                  y: 18
+                  text_font: roboto_14
+                  text_color: 0x9CA3AF
+              - button: {id: lwb0, align: center, x: 143,  y: 79,   width: 104, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 0;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "Art", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+              - button: {id: lwb1, align: center, x: 14,  y: 162,  width: 104, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 1;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "Downs", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+              - button: {id: lwb2, align: center, x: -121, y: 109,   width: 104, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 2;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "LEDs", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+              - button: {id: lwb3, align: center, x: -161, y: -28,  width: 104, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 3;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "Accent", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+              - button: {id: lwb4, align: center, x: -79,  y: -143, width: 104, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 4;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "Kitchen", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+              - button: {id: lwb5, align: center, x: 58,   y: -152, width: 104, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 5;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "Bar", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+              - button: {id: lwb6, align: center, x: 151,  y: -61,  width: 100, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_light_idx) = 6;'}, {script.execute: enter_light_ctl}], widgets: [{label: {text: "Candles", align: center, text_font: roboto_18_bold, text_color: 0xFFFFFF}}]}
+
+        # ── LIGHT CONTROL (level 2) ──────────────────────────────────────────
+        - obj:
+            id: grp_light_ctl
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: lights_name_lbl
+                  text: "ART PENDANTS"
+                  align: center
+                  y: -40
+                  text_font: roboto_18_bold
+                  text_color: 0xFFFFFF
+              - label:
+                  id: lights_pct_label
+                  text: "0%"
+                  align: center
+                  y: 10
+                  text_font: roboto_48
+                  text_color: 0xF1F5F9
+
+        # ── SCENES WHEEL (level 1) ───────────────────────────────────────────
+        - obj:
+            id: grp_scenes
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {id: scene_arc0, align: center, width: 430, height: 430, start_angle: 241, end_angle: 299, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x969CA6, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: scene_arc1, align: center, width: 430, height: 430, start_angle: 301, end_angle: 359, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x7E60A0, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: scene_arc2, align: center, width: 430, height: 430, start_angle: 1,   end_angle: 59,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x3A4A7A, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: scene_arc3, align: center, width: 430, height: 430, start_angle: 61,  end_angle: 119, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0xA88434, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: scene_arc4, align: center, width: 430, height: 430, start_angle: 121, end_angle: 179, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x2E8C82, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: scene_arc5, align: center, width: 430, height: 430, start_angle: 181, end_angle: 239, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x803C3C, arc_width: 100, indicator: {arc_width: 0}}
+              - label:
+                  id: scenes_name_lbl
+                  text: "WHITE"
+                  align: center
+                  text_font: roboto_32_bold
+                  text_color: 0xF1F5F9
+              - button: {id: sb0, align: center, x: 0,    y: -165, width: 104, height: 56, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_scene) = 0;'}, {script.execute: update_scenes_ui}, {script.execute: activate_scene}], widgets: [{label: {text: "WHITE", align: center, text_font: roboto_18_bold, text_color: 0x14161C}}]}
+              - button: {id: sb1, align: center, x: 143,  y: -82,  width: 104, height: 56, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_scene) = 1;'}, {script.execute: update_scenes_ui}, {script.execute: activate_scene}], widgets: [{label: {text: "BAE", align: center, text_font: roboto_18_bold, text_color: 0xFBF4FF}}]}
+              - button: {id: sb2, align: center, x: 143,  y: 82,   width: 104, height: 56, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_scene) = 2;'}, {script.execute: update_scenes_ui}, {script.execute: activate_scene}], widgets: [{label: {text: "NIGHT", align: center, text_font: roboto_18_bold, text_color: 0xEFF4FF}}]}
+              - button: {id: sb3, align: center, x: 0,    y: 165,  width: 104, height: 56, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_scene) = 3;'}, {script.execute: update_scenes_ui}, {script.execute: activate_scene}], widgets: [{label: {text: "DAY", align: center, text_font: roboto_18_bold, text_color: 0x1E1704}}]}
+              - button: {id: sb4, align: center, x: -143, y: 82,   width: 104, height: 56, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_scene) = 4;'}, {script.execute: update_scenes_ui}, {script.execute: activate_scene}], widgets: [{label: {text: "CLUB", align: center, text_font: roboto_18_bold, text_color: 0xF2FFFD}}]}
+              - button: {id: sb5, align: center, x: -143, y: -82,  width: 104, height: 56, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(selected_scene) = 5;'}, {script.execute: update_scenes_ui}, {script.execute: activate_scene}], widgets: [{label: {text: "OFF", align: center, text_font: roboto_18_bold, text_color: 0xFFF2F2}}]}
+
+        # ── CLIMATE WHEEL (level 1) ──────────────────────────────────────────
+        # Modes keep their own hues; the three fan speeds share one violet hue
+        # at rising brightness.
+        - obj:
+            id: grp_climate
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {id: cw_arc0, align: center, width: 430, height: 430, start_angle: 2,   end_angle: 50,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x26262C, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: cw_arc1, align: center, width: 430, height: 430, start_angle: 53,  end_angle: 101, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x173A40, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: cw_arc2, align: center, width: 430, height: 430, start_angle: 105, end_angle: 153, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x16304C, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: cw_arc3, align: center, width: 430, height: 430, start_angle: 156, end_angle: 204, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x461818, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: cw_arc4, align: center, width: 430, height: 430, start_angle: 207, end_angle: 255, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x241C40, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: cw_arc5, align: center, width: 430, height: 430, start_angle: 259, end_angle: 307, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x2E2452, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: cw_arc6, align: center, width: 430, height: 430, start_angle: 310, end_angle: 358, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x392C63, arc_width: 100, indicator: {arc_width: 0}}
+              - label:
+                  id: climate_title_lbl
+                  text: "CLIMATE"
+                  align: center
+                  y: -56
+                  text_font: roboto_14
+                  text_color: 0x7DD3FC
+              - label:
+                  id: target_temp_lbl
+                  text: "24°C"
+                  align: center
+                  y: -12
+                  text_font: roboto_48
+                  text_color: 0xF1F5F9
+              - label:
+                  id: current_temp_lbl
+                  text: "--- °C"
+                  align: center
+                  y: 28
+                  text_font: roboto_14
+                  text_color: 0x94A3B8
+              - label:
+                  id: climate_state_lbl
+                  text: "Off"
+                  align: center
+                  y: 52
+                  text_font: roboto_14
+                  text_color: 0x94A3B8
+              - button: {id: cwb0, align: center, x: 147,  y: 71,   width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_hvac_mode, data: {entity_id: climate.aircon, hvac_mode: "off"}}}], widgets: [{label: {text: "Off", align: center, text_font: roboto_18_bold, text_color: 0xE4E4EC}}]}
+              - button: {id: cwb1, align: center, x: 37,   y: 159,  width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_hvac_mode, data: {entity_id: climate.aircon, hvac_mode: "fan_only"}}}], widgets: [{label: {text: "Fan", align: center, text_font: roboto_18_bold, text_color: 0xDCF4FA}}]}
+              - button: {id: cwb2, align: center, x: -103, y: 127,  width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_hvac_mode, data: {entity_id: climate.aircon, hvac_mode: "cool"}}}], widgets: [{label: {text: "Cool", align: center, text_font: roboto_18_bold, text_color: 0xDCEAFC}}]}
+              - button: {id: cwb3, align: center, x: -163, y: 0,    width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_hvac_mode, data: {entity_id: climate.aircon, hvac_mode: "heat"}}}], widgets: [{label: {text: "Heat", align: center, text_font: roboto_18_bold, text_color: 0xFCE0E0}}]}
+              - button: {id: cwb4, align: center, x: -103, y: -127, width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_fan_mode, data: {entity_id: climate.aircon, fan_mode: "low"}}}], widgets: [{label: {text: "Low", align: center, text_font: roboto_18_bold, text_color: 0xD8CEF4}}]}
+              - button: {id: cwb5, align: center, x: 37,   y: -159, width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_fan_mode, data: {entity_id: climate.aircon, fan_mode: "auto"}}}], widgets: [{label: {text: "Auto", align: center, text_font: roboto_18_bold, text_color: 0xE2DAFA}}]}
+              - button: {id: cwb6, align: center, x: 147,  y: -71,  width: 96, height: 54, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{homeassistant.service: {service: climate.set_fan_mode, data: {entity_id: climate.aircon, fan_mode: "high"}}}], widgets: [{label: {text: "High", align: center, text_font: roboto_18_bold, text_color: 0xEDE7FF}}]}
+
+        # ── BLINDS WHEEL (level 1: Bedroom / Club / Sheer / All quadrants) ───
+        - obj:
+            id: grp_blinds_wheel
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - arc: {id: bw_arc0, align: center, width: 430, height: 430, start_angle: 2,   end_angle: 88,  min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x5568B4, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: bw_arc1, align: center, width: 430, height: 430, start_angle: 92,  end_angle: 178, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x123C36, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: bw_arc2, align: center, width: 430, height: 430, start_angle: 182, end_angle: 268, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x35284A, arc_width: 100, indicator: {arc_width: 0}}
+              - arc: {id: bw_arc3, align: center, width: 430, height: 430, start_angle: 272, end_angle: 358, min_value: 0, max_value: 100, value: 0, adjustable: false, clickable: false, arc_rounded: false, bg_opa: 0, arc_color: 0x4A2C10, arc_width: 100, indicator: {arc_width: 0}}
+              - label:
+                  id: blinds_title_lbl
+                  text: "BLINDS"
+                  align: center
+                  text_font: roboto_24
+                  text_color: 0x7DD3FC
+              - button: {id: bwb0, align: center, x: 115,  y: 115,  width: 140, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(blind_sel) = 0;'}, {script.execute: enter_blind_ctl}], widgets: [{label: {text: "Bedroom", align: center, text_font: roboto_18_bold, text_color: 0xEAEEFF}}]}
+              - button: {id: bwb1, align: center, x: -115, y: 115,  width: 140, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(blind_sel) = 1;'}, {script.execute: enter_blind_ctl}], widgets: [{label: {text: "Club", align: center, text_font: roboto_18_bold, text_color: 0xE6FFFB}}]}
+              - button: {id: bwb2, align: center, x: -115, y: -115, width: 140, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(blind_sel) = 2;'}, {script.execute: enter_blind_ctl}], widgets: [{label: {text: "Sheer", align: center, text_font: roboto_18_bold, text_color: 0xF0E6FF}}]}
+              - button: {id: bwb3, align: center, x: 115,  y: -115, width: 140, height: 58, bg_opa: 0, shadow_width: 0, border_width: 0, on_click: [{lambda: 'id(blind_sel) = 3;'}, {script.execute: enter_blind_ctl}], widgets: [{label: {text: "All", align: center, text_font: roboto_18_bold, text_color: 0xFFF0D6}}]}
+
+        # ── BLIND CONTROL (level 2) ──────────────────────────────────────────
+        - obj:
+            id: grp_blind_ctl
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: blind_name_lbl
+                  text: "BEDROOM"
+                  align: center
+                  y: -40
+                  text_font: roboto_18_bold
+                  text_color: 0xFFFFFF
+              - label:
+                  id: climate_blinds_state
+                  text: "—"
+                  align: center
+                  y: 2
+                  text_font: roboto_32_bold
+                  text_color: 0x7DD3FC
+              - label:
+                  id: climate_blinds_hint
+                  text: "Press to stop"
+                  align: center
+                  y: 44
+                  text_font: roboto_14
+                  text_color: 0x64748B
+
+        # ── VINYL RECORD (Media centre, full size) ───────────────────────────
+        - obj:
+            id: vinyl_group
+            hidden: true
+            align: center
+            width: 400
+            height: 400
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - obj:
+                  align: center
+                  width: 400
+                  height: 400
+                  radius: 200
+                  bg_color: 0x141414
+                  border_width: 3
+                  border_color: 0x000000
+                  pad_all: 0
+              - obj: {align: center, width: 372, height: 372, radius: 186, bg_opa: 0, border_width: 1, border_color: 0x1E1E1E, pad_all: 0}
+              - obj: {align: center, width: 336, height: 336, radius: 168, bg_opa: 0, border_width: 1, border_color: 0x1E1E1E, pad_all: 0}
+              - obj: {align: center, width: 300, height: 300, radius: 150, bg_opa: 0, border_width: 1, border_color: 0x1E1E1E, pad_all: 0}
+              - obj: {align: center, width: 264, height: 264, radius: 132, bg_opa: 0, border_width: 1, border_color: 0x1E1E1E, pad_all: 0}
+              - obj: {align: center, width: 228, height: 228, radius: 114, bg_opa: 0, border_width: 1, border_color: 0x1E1E1E, pad_all: 0}
+              - obj: {align: center, width: 192, height: 192, radius: 96,  bg_opa: 0, border_width: 1, border_color: 0x262626, pad_all: 0}
+              - obj:
+                  align: center
+                  width: 150
+                  height: 150
+                  radius: 75
+                  bg_color: 0x14B8A6
+                  border_width: 2
+                  border_color: 0x0E7C70
+                  pad_all: 0
+              - image:
+                  id: media_logo
+                  src: sonos_logo
+                  align: center
+                  pivot_x: 60
+                  pivot_y: 12
+              - obj:
+                  align: center
+                  width: 14
+                  height: 14
+                  radius: 7
+                  bg_color: 0x0F172A
+                  border_width: 0
+                  pad_all: 0
+
+        # Now-playing chips float over the top of the record
+        - label:
+            id: title_label
+            text: "Not Playing"
+            hidden: true
+            align: center
+            y: -140
+            width: 280
+            long_mode: SCROLL_CIRCULAR
+            text_align: center
+            text_font: roboto_24
+            text_color: 0xF1F5F9
+
+        - label:
+            id: artist_label
+            text: "..."
+            hidden: true
+            align: center
+            y: -102
+            width: 260
+            long_mode: SCROLL_CIRCULAR
+            text_align: center
+            text_font: roboto_18
+            text_color: 0x94A3B8
+
+        # ── MEDIA NAV BUTTONS (two chips over the lower half of the record) ──
+        - obj:
+            id: grp_media_btns
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - button:
+                  id: mb_playlists
+                  align: center
+                  x: -75
+                  y: 150
+                  width: 140
+                  height: 58
+                  radius: 29
+                  bg_color: 0x161A1A
+                  bg_opa: 90%
+                  shadow_width: 0
+                  border_width: 1
+                  border_color: 0x2A3230
+                  on_click:
+                    - script.execute: switch_to_playlists
+                  widgets:
+                    - label: {text: "Playlists", align: center, text_font: roboto_18_bold, text_color: 0xE2E8F0}
+              - button:
+                  id: mb_speakers
+                  align: center
+                  x: 75
+                  y: 150
+                  width: 140
+                  height: 58
+                  radius: 29
+                  bg_color: 0x161A1A
+                  bg_opa: 90%
+                  shadow_width: 0
+                  border_width: 1
+                  border_color: 0x2A3230
+                  on_click:
+                    - script.execute: switch_to_speakers
+                  widgets:
+                    - label: {text: "Speakers", align: center, text_font: roboto_18_bold, text_color: 0xE2E8F0}
+
+        # ── PLAYLISTS PAGE (Media sub-page) ──────────────────────────────────
+        - obj:
+            id: grp_playlists
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: pl_title
+                  text: "PLAYLISTS"
+                  align: center
+                  y: -170
+                  text_font: roboto_24
+                  text_color: 0x34E3D1
+              - button:
+                  align: center
+                  x: -120
+                  y: -66
+                  width: 112
+                  height: 86
+                  radius: 20
+                  bg_color: 0x161A1A
+                  shadow_width: 0
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action: {action: script.turn_on, data: {entity_id: script.play_disco}}
+                  widgets:
+                    - image: {src: icon_disco, align: top_mid, y: 6}
+                    - label: {text: "Disco", align: bottom_mid, y: -4, text_font: roboto_14, text_color: 0xE2E8F0}
+              - button:
+                  align: center
+                  x: 0
+                  y: -66
+                  width: 112
+                  height: 86
+                  radius: 20
+                  bg_color: 0x161A1A
+                  shadow_width: 0
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action: {action: script.turn_on, data: {entity_id: script.play_house}}
+                  widgets:
+                    - image: {src: icon_house, align: top_mid, y: 8}
+                    - label: {text: "House", align: bottom_mid, y: -4, text_font: roboto_14, text_color: 0xE2E8F0}
+              - button:
+                  align: center
+                  x: 120
+                  y: -66
+                  width: 112
+                  height: 86
+                  radius: 20
+                  bg_color: 0x161A1A
+                  shadow_width: 0
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action: {action: script.turn_on, data: {entity_id: script.play_mos}}
+                  widgets:
+                    - image: {src: icon_mos, align: top_mid, y: 6}
+                    - label: {text: "MOS", align: bottom_mid, y: -4, text_font: roboto_14, text_color: 0xE2E8F0}
+              - button:
+                  align: center
+                  x: -60
+                  y: 30
+                  width: 112
+                  height: 86
+                  radius: 20
+                  bg_color: 0x161A1A
+                  shadow_width: 0
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action: {action: script.turn_on, data: {entity_id: script.play_pdm}}
+                  widgets:
+                    - image: {src: icon_pdm, align: top_mid, y: 5}
+                    - label: {text: "PDM", align: bottom_mid, y: -4, text_font: roboto_14, text_color: 0xE2E8F0}
+              - button:
+                  align: center
+                  x: 60
+                  y: 30
+                  width: 112
+                  height: 86
+                  radius: 20
+                  bg_color: 0x161A1A
+                  shadow_width: 0
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action: {action: script.turn_on, data: {entity_id: script.play_dfp}}
+                  widgets:
+                    - image: {src: icon_dfp, align: top_mid, y: 7}
+                    - label: {text: "DFP", align: bottom_mid, y: -4, text_font: roboto_14, text_color: 0xE2E8F0}
+              - label:
+                  text: "Long press to go back"
+                  align: center
+                  y: 130
+                  text_font: roboto_14
+                  text_color: 0x64748B
+
+        # ── SPEAKERS PAGE (Media sub-page) ───────────────────────────────────
+        - obj:
+            id: grp_speakers
+            hidden: true
+            align: center
+            width: 480
+            height: 480
+            bg_opa: 0
+            border_width: 0
+            pad_all: 0
+            clickable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: sp_title
+                  text: "SPEAKERS"
+                  align: center
+                  y: -150
+                  text_font: roboto_24
+                  text_color: 0x34E3D1
+              - button:
+                  id: sp_ungroup
+                  align: center
+                  y: -36
+                  width: 260
+                  height: 84
+                  radius: 22
+                  bg_color: 0x1B2430
+                  shadow_width: 0
+                  border_width: 1
+                  border_color: 0x33414F
+                  on_click:
+                    - homeassistant.action:
+                        action: media_player.unjoin
+                        data: {entity_id: media_player.club}
+                  widgets:
+                    - label: {text: "Ungroup", align: center, text_font: roboto_24, text_color: 0xE2E8F0}
+              - button:
+                  id: sp_tv
+                  align: center
+                  y: 68
+                  width: 260
+                  height: 84
+                  radius: 22
+                  bg_color: 0x1B2430
+                  shadow_width: 0
+                  border_width: 1
+                  border_color: 0x33414F
+                  on_click:
+                    - homeassistant.action:
+                        action: media_player.select_source
+                        data: {entity_id: media_player.club, source: "TV"}
+                  widgets:
+                    - label: {text: "TV Source", align: center, text_font: roboto_24, text_color: 0xE2E8F0}
+              - label:
+                  text: "Long press to go back"
+                  align: center
+                  y: 150
+                  text_font: roboto_14
+                  text_color: 0x64748B
+
+        # ── CENTRE TOUCH ZONE (topmost — same as a short press) ──────────────
+        - button:
+            id: center_btn
+            align: center
+            width: 160
+            height: 160
+            radius: 80
+            bg_opa: 0
+            shadow_width: 0
+            border_width: 0
+            on_click:
+              - script.execute: primary_action
+
+
+number:
+  - platform: template
+    id: night_brightness
+    name: "Night Brightness"
+    icon: "mdi:brightness-6"
+    entity_category: config
+    mode: slider
+    min_value: 1
+    max_value: 60
+    step: 1
+    initial_value: 15
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "%"
+    on_value:
+      then:
+        - if:
+            condition: {lambda: 'return id(night_active);'}
+            then:
+              - light.control:
+                  id: display_backlight
+                  brightness: !lambda 'return x / 100.0f;'

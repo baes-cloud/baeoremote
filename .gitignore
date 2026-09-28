@@ -1,0 +1,7 @@
+secrets.yaml
+rotary-display-1.new.yaml
+.esphome/
+.venv/
+__pycache__/
+*.bak*
+*.pre-*

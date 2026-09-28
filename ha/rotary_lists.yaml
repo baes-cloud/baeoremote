@@ -1,0 +1,70 @@
+# Lists for the rotary-display-1 Playlists page: all Sonos favourites (Club's
+# source list) and Music Assistant favourite albums. ESPHome can't read action
+# responses, so this flattens them into "|"-joined attributes the device parses,
+# and script.rotary_play_list plays an entry by list + index.
+template:
+  - trigger:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: "/30"
+      - trigger: state
+        entity_id: media_player.club
+        attribute: source_list
+      - trigger: event
+        event_type: rotary_lists_refresh
+    action:
+      - action: music_assistant.get_library
+        data:
+          config_entry_id: 01KVF3KES1KSZ0JYSXJ405AKVA
+          media_type: album
+          favorite: true
+          order_by: name
+          limit: 60
+        response_variable: lib
+        continue_on_error: true
+    sensor:
+      - name: Rotary lists
+        unique_id: rotary_lists
+        state: "{{ now().isoformat() }}"
+        attributes:
+          fav_names: >-
+            {{ (state_attr('media_player.club', 'source_list') or [])
+               | reject('in', ['TV', 'Line-in'])
+               | map('regex_replace', '(-[A-Za-z0-9_-]{11})?\\.(mp3|mp4|wav|m4a|flac)$', '')
+               | map('regex_replace', '\\s+', ' ') | map('trim') | map('replace', '|', '/') | join('|') }}
+          album_names: >-
+            {% set it = lib['items'] if lib is defined and lib is mapping and 'items' in lib else none %}
+            {{ this.attributes.album_names | default('') if it is none else
+               it | map(attribute='name') | map('replace', '|', '/') | join('|') }}
+          album_artists: >-
+            {% set it = lib['items'] if lib is defined and lib is mapping and 'items' in lib else none %}
+            {% if it is none %}{{ this.attributes.album_artists | default('') }}{% else %}
+            {%- set ns = namespace(a=[]) %}
+            {%- for i in it %}{% set ns.a = ns.a + [((i.artists or []) | map(attribute='name') | first | default('')) | replace('|', '/')] %}{% endfor %}
+            {{- ns.a | join('|') }}{% endif %}
+          album_uris: >-
+            {% set it = lib['items'] if lib is defined and lib is mapping and 'items' in lib else none %}
+            {{ this.attributes.album_uris | default('') if it is none else it | map(attribute='uri') | join('|') }}
+
+script:
+  rotary_play_list:
+    alias: Rotary – play list entry
+    mode: queued
+    fields:
+      kind: {description: "fav or album"}
+      idx: {description: "0-based index"}
+    sequence:
+      - if: "{{ kind == 'fav' }}"
+        then:
+          - action: media_player.select_source
+            target: {entity_id: media_player.club}
+            data:
+              source: "{{ ((state_attr('media_player.club', 'source_list') or []) | reject('in', ['TV', 'Line-in']) | list)[idx | int] }}"
+        else:
+          - action: music_assistant.play_media
+            target: {entity_id: media_player.club_2}
+            data:
+              media_id: "{{ (state_attr('sensor.rotary_lists', 'album_uris') or '').split('|')[idx | int] }}"
+              media_type: album
+              enqueue: replace
