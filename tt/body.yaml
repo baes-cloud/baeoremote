@@ -978,7 +978,12 @@ touchscreen:
     skip_probe: true
     on_touch:
       - lambda: 'id(tx0) = touch.x; id(ty0) = touch.y; id(tx1) = touch.x; id(ty1) = touch.y;'
-      - script.execute: screen_timeout_timer
+      # the CST816 throws phantom touches at the (479,479) corner every minute or two;
+      # anything outside the round glass must not wake the screen
+      - if:
+          condition:
+            lambda: 'int dx = touch.x - 240, dy = touch.y - 240; return dx * dx + dy * dy < 236 * 236;'
+          then: [{script.execute: screen_timeout_timer}]
     on_update:
       - lambda: 'for (auto &t : touches) { id(tx1) = t.x; id(ty1) = t.y; break; }'
     on_release:
