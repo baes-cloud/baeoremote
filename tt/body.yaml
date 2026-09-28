@@ -625,21 +625,27 @@ script:
       - script.execute: update_np
 
   # Club on the TV input: borrow title + poster from whatever the TV is playing,
-  # Plex client first (it has the real poster), then the Google TV Streamer.
+  # Plex client first (it has the real poster), then ABC iview, then the Google TV Streamer.
   - id: tv_refresh
     then:
       - lambda: |-
           auto ok = [](const std::string &v) { return !(v.empty() || v == "unknown" || v == "unavailable" || v == "None"); };
           auto live = [](const std::string &s) { return s == "playing" || s == "paused"; };
           std::string title, sub, pic;
-          if (ok(id(tv_plex_state).state) && ok(id(tv_plex_title).state)) {
+          if (live(id(tv_plex_state).state) && ok(id(tv_plex_title).state)) {
             title = id(tv_plex_title).state;
             sub = ok(id(tv_plex_series).state) ? id(tv_plex_series).state : std::string("Plex");
+          } else if (ok(id(iv_title).state)) {
+            title = id(iv_title).state;
+            sub = ok(id(iv_ep).state) ? id(iv_ep).state : std::string("ABC iview");
+          } else if (id(tv_atv_app).state == "au.net.abc.iview") {
+            title = "ABC iview";
           } else if (ok(id(tv_cast_state).state) && ok(id(tv_cast_title).state)) {
             title = id(tv_cast_title).state;
             sub = ok(id(tv_cast_app).state) ? id(tv_cast_app).state : std::string("");
           }
           if (live(id(tv_plex_state).state) && ok(id(tv_plex_pic).state)) pic = id(tv_plex_pic).state;
+          else if (ok(id(iv_title).state) && ok(id(iv_pic).state)) pic = id(iv_pic).state;
           else if (live(id(tv_cast_state).state) && ok(id(tv_cast_pic).state)) pic = id(tv_cast_pic).state;
           else if (live(id(tv_atv_state).state) && ok(id(tv_atv_pic).state)) pic = id(tv_atv_pic).state;
           id(tv_title) = title; id(tv_sub) = sub; id(tv_pic) = pic;

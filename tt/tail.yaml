@@ -247,6 +247,30 @@ text_sensor:
       then:
         - lambda: |-
             id(art_v) = [&] { std::vector<std::string> v; if (x.empty()) return v; size_t s = 0; for (;;) { size_t p = x.find('|', s); v.push_back(x.substr(s, p == std::string::npos ? std::string::npos : p - s)); if (p == std::string::npos) return v; s = p + 1; } }();
+  # ABC iview (read off the Streamer by HA packages/rotary_iview.yaml)
+  - platform: homeassistant
+    id: iv_title
+    entity_id: sensor.club_tv_iview
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: iv_ep
+    entity_id: sensor.club_tv_iview
+    attribute: episode
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: iv_pic
+    entity_id: sensor.club_tv_iview
+    attribute: picture
+    on_value:
+      then: [{script.execute: tv_refresh}]
+  - platform: homeassistant
+    id: tv_atv_app
+    entity_id: media_player.club_android_tv_10_0_0_248_club_tv
+    attribute: app_id
+    on_value:
+      then: [{script.execute: tv_refresh}]
   - platform: homeassistant
     id: club_group
     entity_id: media_player.club

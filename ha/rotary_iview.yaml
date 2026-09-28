@@ -1,0 +1,131 @@
+# ABC iview doesn't publish what it's playing (no Android media session), so the
+# Club TV (Google TV Streamer, via ADB) is asked directly:
+#   - once a minute while iview is the foreground app, a silent UI dump says
+#     whether the player is open;
+#   - when a player session starts (and again once the current episode should
+#     have ended), Up is pressed to bring iview's controls up for a few seconds
+#     and the title is read off them ("Four Corners, S2026 Behind The Orange Wave");
+#   - the show artwork comes from ABC's public iview API and is served locally
+#     (/local/rotary/iview.jpg) because the displays can't reach the internet.
+# Result: sensor.club_tv_iview (state = show, attributes episode/picture),
+# read by rotary-display-1 when Club is on the TV input.
+
+rest_command:
+  rotary_iview_search:
+    url: "https://api.iview.abc.net.au/v3/search?keyword={{ keyword | urlencode }}"
+    method: GET
+    timeout: 15
+
+shell_command:
+  rotary_iview_art: "curl -s -m 20 -o /config/www/rotary/iview.jpg {{ url }}"
+
+template:
+  - trigger:
+      - trigger: event
+        event_type: rotary_iview
+    sensor:
+      - name: Club TV iview
+        unique_id: club_tv_iview
+        icon: mdi:television-play
+        state: "{{ trigger.event.data.title | default('') }}"
+        attributes:
+          episode: "{{ trigger.event.data.episode | default('') }}"
+          picture: "{{ trigger.event.data.picture | default('') }}"
+          next_peek: "{{ trigger.event.data.next_peek | default(0) }}"
+
+automation:
+  - id: rotary_iview_peek
+    alias: Rotary – read what's playing in ABC iview
+    description: See packages/rotary_iview.yaml
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: media_player.club_android_tv_10_0_0_248_club_tv
+        attribute: app_id
+        to: au.net.abc.iview
+        for: "00:00:20"
+      - trigger: time_pattern
+        minutes: "/1"
+    actions:
+      - variables:
+          tv: media_player.club_android_tv_10_0_0_248_club_tv
+          cur: "{{ states('sensor.club_tv_iview') }}"
+          has_title: "{{ cur not in ['', 'unknown', 'unavailable'] }}"
+          in_iview: "{{ state_attr(tv, 'app_id') == 'au.net.abc.iview' and states(tv) not in ['off', 'unavailable', 'unknown'] }}"
+      - if: "{{ not in_iview }}"
+        then:
+          - if: "{{ has_title }}"
+            then:
+              - event: rotary_iview
+                event_data: {title: "", episode: "", picture: "", next_peek: 0}
+          - stop: iview not in front
+      # silent check: is the video player open?
+      - action: androidtv.adb_command
+        target: {entity_id: "{{ tv }}"}
+        data:
+          command: "uiautomator dump /sdcard/rv.xml >/dev/null 2>&1; grep -c exo_content_frame /sdcard/rv.xml"
+      - variables:
+          player: "{{ (state_attr(tv, 'adb_response') | string | trim) | int(0) > 0 }}"
+      - if: "{{ not player }}"
+        then:
+          - if: "{{ has_title }}"
+            then:
+              - event: rotary_iview
+                event_data: {title: "", episode: "", picture: "", next_peek: 0}
+          - stop: player closed
+      - condition: "{{ not has_title or now().timestamp() >= (state_attr('sensor.club_tv_iview', 'next_peek') | float(0)) }}"
+      # peek: Up shows the controls (doesn't pause); read the title and position off them
+      - action: androidtv.adb_command
+        target: {entity_id: "{{ tv }}"}
+        data:
+          command: >-
+            input keyevent KEYCODE_DPAD_UP; sleep 1; uiautomator dump /sdcard/rv.xml >/dev/null 2>&1;
+            grep -o -E 'content-desc="[^"]*(Press right for more player options|Track position)[^"]*"' /sdcard/rv.xml
+      - variables:
+          r: "{{ state_attr(tv, 'adb_response') | string }}"
+          head: "{{ (r | regex_findall('content-desc=\"(.*?), Press right for more player options')) | first | default('') }}"
+          series: "{{ head.split(', ')[0] if head else '' }}"
+          episode: "{{ (head.split(', ', 1)[1] if ', ' in head else '') | regex_replace('^S\\d+\\s+', '') }}"
+          pm: "{{ r | regex_findall('Track position\\. (\\d+) minutes? of (\\d+) minutes?') }}"
+          left_min: "{{ ((pm[0][1] | int) - (pm[0][0] | int)) if pm | count > 0 else 20 }}"
+          next_peek: "{{ now().timestamp() + ([left_min | int + 1, 2] | max) * 60 if head else now().timestamp() + 120 }}"
+      - if: "{{ not head }}"
+        then:
+          - event: rotary_iview
+            event_data:
+              title: "{{ cur if has_title else '' }}"
+              episode: "{{ state_attr('sensor.club_tv_iview', 'episode') or '' }}"
+              picture: "{{ state_attr('sensor.club_tv_iview', 'picture') or '' }}"
+              next_peek: "{{ next_peek }}"
+          - stop: couldn't read the controls
+      - variables:
+          picture: "{{ state_attr('sensor.club_tv_iview', 'picture') if series == cur else '' }}"
+      # new show: fetch its artwork
+      - if: "{{ series != cur or not picture }}"
+        then:
+          - action: rest_command.rotary_iview_search
+            data: {keyword: "{{ series }}"}
+            response_variable: resp
+            continue_on_error: true
+          - variables:
+              items: "{{ ((resp['content']['results']['items'] if resp is defined and resp['content'] is mapping and 'results' in resp['content'] else []) | selectattr('title', 'eq', series) | list) }}"
+              imgs: "{{ items[0]['images'] if items | count > 0 else [] }}"
+              pick: >-
+                {% set ns = namespace(u='') %}
+                {% for t in ['portrait', 'thumb', 'thumb-titled'] %}
+                  {% if not ns.u %}{% set m = imgs | selectattr('type', 'eq', t) | list %}{% if m %}{% set ns.u = m[0]['url'] %}{% endif %}{% endif %}
+                {% endfor %}{{ ns.u }}
+          - if: "{{ pick | length > 0 }}"
+            then:
+              - action: shell_command.rotary_iview_art
+                data: {url: "{{ pick }}"}
+                continue_on_error: true
+              - variables:
+                  picture: "/local/rotary/iview.jpg?v={{ now().timestamp() | int }}"
+      - event: rotary_iview
+        event_data:
+          title: "{{ series }}"
+          episode: "{{ episode }}"
+          picture: "{{ picture }}"
+          next_peek: "{{ next_peek }}"
