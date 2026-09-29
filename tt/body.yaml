@@ -1,12 +1,9 @@
 
 # --------------------------------------------------------
 # BÆO REMOTE (media-only UI; turntable retired 2026-09-27)
-#   Face 0 "Face A": gold radial face in a dark bezel, etched Manrope clock /
-#   title / artist and a Syne BÆOREMOTE wordmark (BaeoRemote Face A Spec.pdf).
 #   Face 1 "Nocturne": smoked glass over a blurred cover, lit volume ring.
 #   Swipe left/right toggles faces; hold the knob for Playlists (+ ungroup).
 # current_mode: 0 now-playing · 6 playlists · 9 inert
-# face (swipe left/right): 0 Face A · 1 Nocturne
 # idle -> night face: dim amber Face A on near-black (grp_night, top layer)
 # --------------------------------------------------------
 http_request:
@@ -66,11 +63,7 @@ online_image:
     update_interval: never
     on_download_finished:
       - lambda: 'id(art_ok) = true;'
-      - lvgl.image.update: {id: noc_art, src: album_blur}
-      - lambda: |-
-          int w = id(album_blur)->get_width(), h = id(album_blur)->get_height();
-          int m = w < h ? w : h;
-          if (m > 0) lv_image_set_scale((lv_obj_t *) id(noc_art), (256 * 520) / m);
+      - script.execute: {id: paint_bg, live: true}
     on_error:
       - lambda: 'id(art_ok) = false;'
 
@@ -186,10 +179,6 @@ globals:
   - id: ug_n
     type: int
     initial_value: '0'
-  - id: face                   # 0 Face A · 1 Nocturne
-    type: int
-    restore_value: true
-    initial_value: '0'
   - id: tv_title               # what's on the TV (borrowed from Plex / the Streamer)
     type: std::string
     initial_value: '""'
@@ -298,12 +287,10 @@ script:
           char b[8];
           if (t.is_valid()) snprintf(b, sizeof(b), "%02d:%02d", t.hour, t.minute);
           else snprintf(b, sizeof(b), "--:--");
-          lv_label_set_text((lv_obj_t *) id(fa_clk), b);
-          lv_label_set_text((lv_obj_t *) id(fa_clk_s), b);
           lv_label_set_text((lv_obj_t *) id(noc_clk), b);
 
   # ══ FACES ═══════════════════════════════════════════════════════════════
-  # Face A (day) and its night twin, painted once at boot into RGB565 canvases.
+  # The night face, painted once at boot into an RGB565 canvas.
   # A little hash dither keeps the smooth gradients from banding in 16-bit.
   - id: paint_faces
     then:
@@ -315,12 +302,11 @@ script:
             if (t < m) { float u = t / m; for (int i = 0; i < 3; i++) o[i] = c0[i] + (c1[i] - c0[i]) * u; }
             else { float u = (t - m) / (1 - m); for (int i = 0; i < 3; i++) o[i] = c1[i] + (c2[i] - c1[i]) * u; }
           };
-          const float RF = 215.0f;                                   // night face radius; bezel beyond (gold runs to the edge)
-          const float g0[3] = {0xE2, 0xC4, 0x8A}, g1[3] = {0xB0, 0x8E, 0x5A}, g2[3] = {0x6F, 0x53, 0x30};   // gold
+          const float RF = 215.0f;                                   // face radius; bezel beyond
           const float n0[3] = {0x0E, 0x0A, 0x08}, n1[3] = {0x07, 0x05, 0x04}, n2[3] = {0x03, 0x02, 0x02};   // night
           const float b0[3] = {0x2A, 0x2A, 0x2E}, b2[3] = {0x0B, 0x0B, 0x0C};                               // bezel
-          lv_obj_t *cvs[2] = {(lv_obj_t *) id(fa_cv), (lv_obj_t *) id(nt_cv)};
-          for (int k = 0; k < 2; k++) {
+          lv_obj_t *cvs[1] = {(lv_obj_t *) id(nt_cv)};
+          for (int k = 0; k < 1; k++) {
             lv_draw_buf_t *db = lv_canvas_get_draw_buf(cvs[k]);
             if (db == nullptr) continue;
             for (int y = 0; y < 480; y++) {
@@ -329,19 +315,15 @@ script:
               for (int x = 0; x < 480; x++) {
                 float dx = x - 240, dy = y - 240, r = sqrtf(dx * dx + dy * dy);
                 float c[3];
-                if (r >= RF && k == 1) {
+                if (r >= RF) {
                   // dark radial bezel, a touch lighter towards the face and the top left
                   float t = (r - RF) / (240.0f - RF), lit = r > 0 ? -(dx * 0.5f + dy * 0.85f) / r : 0;
                   for (int i = 0; i < 3; i++) c[i] = b0[i] + (b2[i] - b0[i]) * t + lit * 5.0f;
                   if (r < RF + 1.5f) for (int i = 0; i < 3; i++) c[i] *= 0.55f;          // fine seam
-                } else if (k == 0) {
-                  // gold, lit from 42% / 30%
-                  float lx = x - 0.42f * 480, ly = y - 0.30f * 480;
-                  grad(sqrtf(lx * lx + ly * ly) / 436.0f, g0, g1, g2, 0.45f, c);
                 } else {
                   grad(r / 304.0f, n0, n1, n2, 0.60f, c);
                 }
-                uint32_t nz = hsh(x * 7919u + y * 104729u + k * 31u);
+                uint32_t nz = hsh(x * 7919u + y * 104729u);
                 float d = ((nz & 255) / 255.0f - 0.5f) * 7.0f;               // ~1 LSB of RGB565
                 int ci[3];
                 for (int i = 0; i < 3; i++) { float v = c[i] + d; ci[i] = v < 0 ? 0 : (v > 255 ? 255 : (int) v); }
@@ -351,8 +333,60 @@ script:
             lv_obj_invalidate(cvs[k]);
           }
           // Manrope Light numerals run a little tight (-2 px); YAML won't take negative tracking
-          for (lv_obj_t *o : {(lv_obj_t *) id(night_clock_lbl), (lv_obj_t *) id(fa_num), (lv_obj_t *) id(fa_num_s), (lv_obj_t *) id(noc_num)})
+          for (lv_obj_t *o : {(lv_obj_t *) id(night_clock_lbl), (lv_obj_t *) id(noc_num)})
             lv_obj_set_style_text_letter_space(o, -2, LV_PART_MAIN);
+
+  # Nocturne background: the (tiny) album art blown up to the whole screen with a
+  # cubic B-spline, which is smooth by construction, so it reads as a soft blur
+  # instead of LVGL's blocky zoom. live=false paints the placeholder.
+  - id: paint_bg
+    parameters:
+      live: bool
+    then:
+      - lambda: |-
+          image::Image *im = live ? static_cast<image::Image *>(id(album_blur)) : id(art_ph);
+          int w = im->get_width(), h = im->get_height();
+          lv_draw_buf_t *db = lv_canvas_get_draw_buf((lv_obj_t *) id(noc_bg));
+          if (db == nullptr || w < 2 || h < 2) return;
+          float *src = (float *) heap_caps_malloc(w * h * 3 * sizeof(float), MALLOC_CAP_SPIRAM);
+          float *tmp = (float *) heap_caps_malloc(h * 480 * 3 * sizeof(float), MALLOC_CAP_SPIRAM);
+          if (src == nullptr || tmp == nullptr) { free(src); free(tmp); return; }
+          for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+              Color p = im->get_pixel(x, y);
+              float *s = src + (y * w + x) * 3; s[0] = p.r; s[1] = p.g; s[2] = p.b;
+            }
+          // centred square crop, zoomed a touch so the edges fall off-screen (cover)
+          float m = (w < h ? w : h) * 0.92f, x0 = (w - m) / 2.0f, y0 = (h - m) / 2.0f, sc = m / 480.0f;
+          auto wts = [](float t, float *k) {
+            float t2 = t * t, t3 = t2 * t, u = 1 - t;
+            k[0] = u * u * u / 6; k[1] = (3 * t3 - 6 * t2 + 4) / 6; k[2] = (-3 * t3 + 3 * t2 + 3 * t + 1) / 6; k[3] = t3 / 6;
+          };
+          auto cl = [](int v, int n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); };
+          for (int x = 0; x < 480; x++) {                       // pass 1: rows -> 480 wide
+            float u = x0 + (x + 0.5f) * sc - 0.5f; int i = (int) floorf(u); float k[4]; wts(u - i, k);
+            for (int y = 0; y < h; y++) {
+              float *o = tmp + (y * 480 + x) * 3; o[0] = o[1] = o[2] = 0;
+              for (int q = 0; q < 4; q++) { const float *s = src + (y * w + cl(i - 1 + q, w)) * 3; o[0] += s[0] * k[q]; o[1] += s[1] * k[q]; o[2] += s[2] * k[q]; }
+            }
+          }
+          auto hsh = [](uint32_t v) { v ^= v >> 16; v *= 0x7feb352d; v ^= v >> 15; v *= 0x846ca68b; v ^= v >> 16; return v; };
+          for (int y = 0; y < 480; y++) {                       // pass 2: columns -> 480 tall
+            if ((y & 31) == 0) App.feed_wdt();
+            float v = y0 + (y + 0.5f) * sc - 0.5f; int j = (int) floorf(v); float k[4]; wts(v - j, k);
+            const float *r0 = tmp + cl(j - 1, h) * 1440, *r1 = tmp + cl(j, h) * 1440, *r2 = tmp + cl(j + 1, h) * 1440, *r3 = tmp + cl(j + 2, h) * 1440;
+            uint16_t *row = (uint16_t *) (db->data + y * db->header.stride);
+            for (int x = 0; x < 480; x++) {
+              int ci[3]; float d = ((hsh(x * 7919u + y * 104729u) & 255) / 255.0f - 0.5f) * 7.0f;
+              for (int c = 0; c < 3; c++) {
+                float f = r0[x * 3 + c] * k[0] + r1[x * 3 + c] * k[1] + r2[x * 3 + c] * k[2] + r3[x * 3 + c] * k[3] + d;
+                ci[c] = f < 0 ? 0 : (f > 255 ? 255 : (int) f);
+              }
+              row[x] = lv_color_to_u16(lv_color_make(ci[0], ci[1], ci[2]));
+            }
+          }
+          free(src); free(tmp);
+          lv_obj_invalidate((lv_obj_t *) id(noc_bg));
 
   # Nocturne: dark radial wash + a faint top-left reflection over the cover bloom
   - id: paint_vignette
@@ -396,22 +430,12 @@ script:
           }
 
   - id: set_face
-    parameters:
-      f: int
     then:
-      - lambda: |-
-          id(face) = f == 1 ? 1 : 0;
-          if (id(face) == 0) {
-            lv_obj_add_flag((lv_obj_t *) id(grp_noc), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag((lv_obj_t *) id(grp_fa), LV_OBJ_FLAG_HIDDEN);
-          } else {
-            lv_obj_add_flag((lv_obj_t *) id(grp_fa), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag((lv_obj_t *) id(grp_noc), LV_OBJ_FLAG_HIDDEN);
-          }
+      - lambda: 'lv_obj_remove_flag((lv_obj_t *) id(grp_noc), LV_OBJ_FLAG_HIDDEN);'
       - script.execute: update_np
       - script.execute: update_clock
 
-  # knob turned / scrubbed on a face: big numeral + lit volume
+  # knob turned / scrubbed: big numeral + lit volume
   - id: face_hud
     then:
       - lambda: |-
@@ -419,12 +443,7 @@ script:
           if (id(hud_kind) == 1) snprintf(b, sizeof(b), "%d", (int) roundf(id(vol_local) * 100));
           else { int t = (int) id(pos_s); snprintf(b, sizeof(b), "%d:%02d", t / 60, t % 60); }
           int v = (int) roundf(id(vol_local) * 100);
-          if (id(face) == 0) {
-            lv_label_set_text((lv_obj_t *) id(fa_num), b); lv_label_set_text((lv_obj_t *) id(fa_num_s), b);
-            lv_obj_remove_flag((lv_obj_t *) id(fa_num), LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag((lv_obj_t *) id(fa_num_s), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag((lv_obj_t *) id(fa_np), LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag((lv_obj_t *) id(fa_np_s), LV_OBJ_FLAG_HIDDEN);
-            lv_arc_set_value((lv_obj_t *) id(fa_vol), v); lv_obj_remove_flag((lv_obj_t *) id(fa_vol), LV_OBJ_FLAG_HIDDEN);
-          } else {
+          {
             lv_label_set_text((lv_obj_t *) id(noc_num), b);
             lv_obj_remove_flag((lv_obj_t *) id(noc_num), LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag((lv_obj_t *) id(noc_title), LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag((lv_obj_t *) id(noc_artist), LV_OBJ_FLAG_HIDDEN);
@@ -436,9 +455,6 @@ script:
   - id: face_hud_end
     then:
       - lambda: |-
-          lv_obj_add_flag((lv_obj_t *) id(fa_num), LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag((lv_obj_t *) id(fa_num_s), LV_OBJ_FLAG_HIDDEN);
-          lv_obj_remove_flag((lv_obj_t *) id(fa_np), LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag((lv_obj_t *) id(fa_np_s), LV_OBJ_FLAG_HIDDEN);
-          lv_obj_add_flag((lv_obj_t *) id(fa_vol), LV_OBJ_FLAG_HIDDEN);
           lv_obj_add_flag((lv_obj_t *) id(noc_num), LV_OBJ_FLAG_HIDDEN);
           lv_obj_remove_flag((lv_obj_t *) id(noc_title), LV_OBJ_FLAG_HIDDEN); lv_obj_remove_flag((lv_obj_t *) id(noc_artist), LV_OBJ_FLAG_HIDDEN);
           lv_obj_set_style_arc_width((lv_obj_t *) id(noc_ring), 2, LV_PART_INDICATOR);
@@ -577,15 +593,9 @@ script:
     then:
       - lambda: 'id(pa) = id(current_mode);'
       - if:
-          condition: {lambda: 'return id(pa) == 0 && id(swipe) == 1;'}
-          then: [{script.execute: {id: set_face, f: !lambda 'return 1 - id(face);'}}]
-      - if:
-          condition: {lambda: 'return id(pa) == 0 && id(swipe) == 2;'}
-          then: [{script.execute: {id: set_face, f: !lambda 'return 1 - id(face);'}}]
-      - if:
           condition: {lambda: 'return id(pa) == 0 && id(swipe) == 4;'}
           then: [{script.execute: open_playlists}]
-      # playlists: sideways swipes change section, up/down closes
+      # playlists: any swipe goes back
       - if:
           condition: {lambda: 'return id(pa) == 6;'}
           then: [{script.execute: pl_back}]
@@ -679,16 +689,7 @@ script:
           lv_label_set_text((lv_obj_t *) id(noc_title), t.c_str());
           lv_label_set_text((lv_obj_t *) id(noc_artist), a.c_str());
           lv_obj_set_style_opa((lv_obj_t *) id(noc_title), id(media_playing) ? LV_OPA_COVER : LV_OPA_50, LV_PART_MAIN);
-          lv_obj_set_style_image_opa((lv_obj_t *) id(noc_art), id(media_playing) ? 235 : 120, LV_PART_MAIN);
-          // Face A: one line of title, cut at a word (UTF-8 safe); the label also dots anything wider
-          std::string ft = t;
-          if (ft.size() > 22) {
-            size_t p = ft.rfind(' ', 22); if (p == std::string::npos || p < 12) p = 22;
-            while (p > 0 && (ft[p] & 0xC0) == 0x80) p--;
-            ft = ft.substr(0, p) + "\u2026";
-          }
-          lv_label_set_text((lv_obj_t *) id(fa_title), ft.c_str()); lv_label_set_text((lv_obj_t *) id(fa_title_s), ft.c_str());
-          lv_label_set_text((lv_obj_t *) id(fa_artist), a.c_str()); lv_label_set_text((lv_obj_t *) id(fa_artist_s), a.c_str());
+          lv_obj_set_style_image_opa((lv_obj_t *) id(noc_bg), id(media_playing) ? 235 : 120, LV_PART_MAIN);
           // night face: track info only while something is actually playing
           bool on = id(media_playing) && ok(t) && t != "Nothing playing";
           lv_label_set_text((lv_obj_t *) id(nt_title), on ? t.c_str() : "");

@@ -22,27 +22,12 @@ font:
     bpp: 4
     glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·°–"
   # --- Bæo faces (Syne)
-  # --- Face A + night face (Manrope; BaeoRemote Face A Spec.pdf)
+  # --- night face (Manrope; BaeoRemote Face A Spec.pdf)
   - file: "gfonts://Manrope@300"
     id: mr_num                 # night clock + volume numeral
     size: 104
     bpp: 4
     glyphs: "0123456789:-"
-  - file: "gfonts://Manrope@700"
-    id: mr_clk
-    size: 22
-    bpp: 4
-    glyphs: "0123456789:-"
-  - file: "gfonts://Manrope@300"
-    id: mr_40
-    size: 40
-    bpp: 4
-    glyphs: @@LATIN@@
-  - file: "gfonts://Manrope@700"
-    id: mr_a20
-    size: 20
-    bpp: 4
-    glyphs: @@CAPS@@
   - file: "gfonts://Manrope@700"
     id: mr_a14
     size: 14
@@ -70,19 +55,9 @@ font:
     glyphs: "0123456789/ "
   - file: "gfonts://Syne@500"
     id: hk_clock
-    size: 30
+    size: 40
     bpp: 4
     glyphs: "0123456789:-"
-  - file: "gfonts://Syne@700"
-    id: hk_wm_b
-    size: 29
-    bpp: 4
-    glyphs: "Bæo"
-  - file: "gfonts://Syne@400"
-    id: hk_wm_l
-    size: 29
-    bpp: 4
-    glyphs: "Remot"
   - file: "gfonts://Syne@400"
     id: hk_32
     size: 32
