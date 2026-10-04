@@ -644,7 +644,7 @@ script:
           std::string title, sub, pic;
           if (live(id(tv_plex_state).state) && ok(id(tv_plex_title).state)) {
             title = id(tv_plex_title).state;
-            sub = ok(id(tv_plex_series).state) ? id(tv_plex_series).state : std::string("Plex");
+            sub = (id(tv_plex_type).state == "episode" && ok(id(tv_plex_series).state)) ? id(tv_plex_series).state : std::string("Plex");
           } else if (id(tv_atv_app).state == "au.net.abc.iview") {
             title = "ABC";              // iview doesn't say what it's playing
           } else if (ok(id(tv_cast_state).state) && ok(id(tv_cast_title).state)) {

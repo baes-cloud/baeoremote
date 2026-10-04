@@ -146,6 +146,14 @@ text_sensor:
     attribute: media_series_title
     on_value:
       then: [{script.execute: tv_refresh}]
+  # HA sends nothing when an attribute is missing, so a movie (no series title)
+  # would keep the last show's name — gate the series on the content type.
+  - platform: homeassistant
+    id: tv_plex_type
+    entity_id: media_player.plex_plex_for_android_tv_tv
+    attribute: media_content_type
+    on_value:
+      then: [{script.execute: tv_refresh}]
   - platform: homeassistant
     id: tv_plex_pic
     entity_id: media_player.plex_plex_for_android_tv_tv
