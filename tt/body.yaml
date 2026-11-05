@@ -229,7 +229,25 @@ script:
           else:
             - if:
                 condition: {lambda: 'return id(alarm_state) != 1;'}
-                then: [{script.execute: enter_night}]
+                then:
+                  # music playing: keep the now-playing face, just dim it
+                  - if:
+                      condition: {lambda: 'return id(media_playing);'}
+                      then: [{script.execute: dim_while_playing}]
+                      else: [{script.execute: enter_night}]
+
+  # Day: 40% backlight. 22:00-07:00: the "Night Brightness" slider.
+  - id: dim_while_playing
+    then:
+      - if:
+          condition: {lambda: 'return !id(night_active) && id(current_mode) == 0;'}
+          then:
+            - light.control:
+                id: display_backlight
+                brightness: !lambda |-
+                  auto t = id(ha_time).now();
+                  bool late = t.is_valid() && (t.hour >= 22 || t.hour < 7);
+                  return late ? id(night_brightness).state / 100.0f : 0.4f;
 
   - id: apply_awake_brightness
     then:

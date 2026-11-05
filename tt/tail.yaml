@@ -112,6 +112,8 @@ text_sensor:
       then:
         - lambda: 'id(media_playing) = (x == std::string("playing"));'
         - script.execute: update_np
+        # play/pause changes the idle behaviour (dim vs night clock): restart the timer
+        - script.execute: screen_timeout_timer
   # Album art: HA's proxy URL carries a rotating token plus a "cache=" hash of
   # the artwork; only refetch when that hash changes.
   - platform: homeassistant
