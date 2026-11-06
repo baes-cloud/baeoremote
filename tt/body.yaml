@@ -1,58 +1,21 @@
 
 # --------------------------------------------------------
-# BÆO REMOTE (media-only UI; turntable retired 2026-09-27)
-#   Face 1 "Nocturne": smoked glass over a blurred cover, lit volume ring.
-#   Swipe left/right toggles faces; hold the knob for Playlists (+ ungroup).
-# current_mode: 0 now-playing · 6 playlists · 9 inert
-# idle -> night face: dim amber Face A on near-black (grp_night, top layer)
+# BÆO REMOTE (media-only, Nocturne face). One source, two remotes:
+#   rotary-display-1 drives Club (volume moves every grouped room),
+#   rotary-display-2 drives the Bedroom only. See tt/assemble.py.
+# Knob: turn = volume, hold + turn = scrub, press = play/pause,
+#   double = next, triple = previous, hold = stop music on every speaker.
+# current_mode: 0 now-playing · 9 inert (night clock / alarm popup)
+# idle -> dim face while playing, else the amber night clock (grp_night, top layer)
 # --------------------------------------------------------
 http_request:
   verify_ssl: false
   timeout: 2s
 
 image:
-  - file: "tt/pl_disc_140.png"
-    id: pl_disc_140
-    type: RGB565
-    transparency: alpha_channel
   - file: "tt/art_ph.png"
     id: art_ph
     type: RGB565
-  - file: "icon_disco_w.png"
-    id: icon_disco
-    type: RGB565
-    transparency: alpha_channel
-    resize: 38x44
-  - file: "icon_house_w.png"
-    id: icon_house
-    type: RGB565
-    transparency: alpha_channel
-    resize: 50x40
-  - file: "icon_mos_w.png"
-    id: icon_mos
-    type: RGB565
-    transparency: alpha_channel
-    resize: 46x42
-  - file: "icon_pdm.png"
-    id: icon_pdm
-    type: RGB565
-    transparency: alpha_channel
-    resize: 48x48
-  - file: "icon_dfp_w.png"
-    id: icon_dfp
-    type: RGB565
-    transparency: alpha_channel
-    resize: 44x44
-  - file: "icon_fav_w.png"
-    id: icon_fav
-    type: RGB565
-    transparency: alpha_channel
-    resize: 46x40
-  - file: "icon_alb_w.png"
-    id: icon_alb
-    type: RGB565
-    transparency: alpha_channel
-    resize: 52x40
 
 online_image:
   - id: album_blur
@@ -152,33 +115,18 @@ globals:
   - id: turned_while_held
     type: bool
     initial_value: 'false'
-  - id: pl_sel
-    type: int
-    initial_value: '0'
-  - id: pl_list                # Playlists page section: 0 mixes · 1 Sonos favourites · 2 MA albums
-    type: int
-    initial_value: '0'
-  - id: fav_idx
-    type: int
-    initial_value: '0'
-  - id: alb_idx
-    type: int
-    initial_value: '0'
-  - id: fav_v                  # names from sensor.rotary_lists (HA package rotary_lists.yaml)
-    type: std::vector<std::string>
-  - id: alb_v
-    type: std::vector<std::string>
-  - id: art_v
-    type: std::vector<std::string>
-  - id: sp_mask                # bit i = room i in Club's group (bit 0 = Club)
-    type: int
-    initial_value: '1'
-  - id: ug_list                # rooms being unjoined (comma list)
+  - id: vol_sent               # last level sent to HA (group volume moves by the difference)
+    type: float
+    initial_value: '0.3'
+  - id: room_txt               # "CLUB" / "CLUB + LIVING ROOM" / "CLUB + 3 ROOMS"
     type: std::string
-    initial_value: '""'
-  - id: ug_n
-    type: int
+    initial_value: '"${room_name}"'
+  - id: toast_ms               # artist line shows a toast until then
+    type: uint32_t
     initial_value: '0'
+  - id: hold_hint
+    type: bool
+    initial_value: 'false'
   - id: tv_title               # what's on the TV (borrowed from Plex / the Streamer)
     type: std::string
     initial_value: '""'
@@ -188,24 +136,6 @@ globals:
   - id: tv_pic
     type: std::string
     initial_value: '""'
-  - id: tx0
-    type: int
-    initial_value: '0'
-  - id: ty0
-    type: int
-    initial_value: '0'
-  - id: tx1
-    type: int
-    initial_value: '0'
-  - id: ty1
-    type: int
-    initial_value: '0'
-  - id: swipe                  # 0 none · 1 left · 2 right · 3 up · 4 down
-    type: int
-    initial_value: '0'
-  - id: swipe_ms
-    type: uint32_t
-    initial_value: '0'
 
 script:
 @@ALARM_SCRIPTS@@
@@ -484,54 +414,9 @@ script:
 
   - id: switch_to_now
     then:
-      - script.stop: page_timeout
       - lambda: 'id(current_mode) = 0;'
-      - lvgl.widget.hide: grp_pl
       - script.execute: update_np
       - script.execute: update_clock
-
-  - id: open_playlists
-    then:
-      - lambda: 'id(current_mode) = 6; id(pl_list) = 0;'
-      - script.execute: pl_render
-      - lvgl.widget.show: grp_pl
-      - script.execute: page_timeout
-
-  # the Playlists page closes itself when left alone
-  - id: page_timeout
-    mode: restart
-    then:
-      - delay: 20s
-      - if:
-          condition: {lambda: 'return id(current_mode) == 6;'}
-          then: [{script.execute: switch_to_now}]
-
-  - id: ungroup_all
-    then:
-      - lambda: |-
-          static const char *const e[] = @@ROOM_ENTS_ARR@@;
-          std::string list; int n = 0;
-          for (int i = 1; i < 5; i++)
-            if ((id(sp_mask) >> i) & 1) { if (n++) list += ","; list += e[i]; }
-          id(ug_list) = list; id(ug_n) = n;
-      - if:
-          condition: {lambda: 'return id(ug_n) > 0;'}
-          then:
-            - homeassistant.action:
-                action: media_player.unjoin
-                data:
-                  entity_id: !lambda 'return id(ug_list);'
-            - lambda: 'id(sp_mask) = 1;'
-      - lvgl.label.update:
-          id: pl_ug_lbl
-          text: !lambda |-
-            if (id(ug_n) == 0) return std::string("CLUB ALREADY ALONE");
-            char b[32];
-            snprintf(b, sizeof(b), "UNGROUPED %d ROOM%s", id(ug_n), id(ug_n) > 1 ? "S" : "");
-            return std::string(b);
-      - script.execute: page_timeout
-      - delay: 2500ms
-      - lvgl.label.update: {id: pl_ug_lbl, text: "UNGROUP ALL ROOMS"}
 
   # ══ INPUT ═════════════════════════════════════════════════════════════════
   - id: knob_turn
@@ -563,17 +448,10 @@ script:
                 id(seek_touched_ms) = millis();
             - script.execute: {id: hud_show, kind: 2}
             - script.execute: seek_send
-      # playlists: choose
+      # turning cancels a pending "hold to stop" (hold + turn = scrub)
       - if:
-          condition: {lambda: 'return id(pa) == 6 || id(pa) == 106;'}
-          then:
-            - lambda: |-
-                if (id(pl_list) == 0) { id(pl_sel) = (id(pl_sel) + dir + 7) % 7; return; }
-                int n = id(pl_list) == 1 ? id(fav_v).size() : id(alb_v).size();
-                int &ix = id(pl_list) == 1 ? id(fav_idx) : id(alb_idx);
-                ix += dir; if (ix > n - 1) ix = n - 1; if (ix < 0) ix = 0;
-            - script.execute: pl_render
-            - script.execute: page_timeout
+          condition: {lambda: 'return id(hold_hint);'}
+          then: [{script.execute: hold_hint_end}]
 
   - id: knob_press
     then:
@@ -582,52 +460,97 @@ script:
       - if:
           condition: {lambda: 'return id(pa) == 0;'}
           then:
-            - homeassistant.action: {action: media_player.media_play_pause, data: {entity_id: media_player.club}}
-      - if:
-          condition: {lambda: 'return id(pa) == 6;'}
-          then: [{script.execute: pl_play}]
+            - homeassistant.action: {action: media_player.media_play_pause, data: {entity_id: "${player}"}}
 
-  - id: knob_long
+  - id: knob_next
     then:
       - script.execute: screen_timeout_timer
-      - lambda: 'id(pa) = id(current_mode);'
       - if:
-          condition: {lambda: 'return id(pa) == 0;'}
-          then: [{script.execute: open_playlists}]
-      - if:
-          condition: {lambda: 'return id(pa) == 6;'}
-          then: [{script.execute: pl_back}]
+          condition: {lambda: 'return id(current_mode) == 0;'}
+          then:
+            - homeassistant.action: {action: media_player.media_next_track, data: {entity_id: "${player}"}}
+            - script.execute: {id: toast, msg: "NEXT"}
 
-  - id: tap_center
+  - id: knob_prev
+    then:
+      - script.execute: screen_timeout_timer
+      - if:
+          condition: {lambda: 'return id(current_mode) == 0;'}
+          then:
+            - homeassistant.action: {action: media_player.media_previous_track, data: {entity_id: "${player}"}}
+            - script.execute: {id: toast, msg: "PREVIOUS"}
+
+  # hold: stop the music on every speaker in the house. Works from the night clock
+  # too (a deliberate hold isn't a stray bump), never under the alarm popup.
+  - id: knob_long
+    then:
+      - lambda: 'id(pa) = id(current_mode);'
+      - script.execute: screen_timeout_timer
+      - if:
+          condition: {lambda: 'return id(pa) == 0 || (id(pa) == 9 && !id(alarm_popup_up));'}
+          then:
+            - homeassistant.action: {action: script.turn_on, data: {entity_id: script.rotary_stop_all}}
+            - script.execute: {id: toast, msg: "ALL MUSIC STOPPED"}
+
+  # held long enough without turning: say what letting go will do
+  - id: hold_hint_start
     mode: restart
     then:
-      - delay: 60ms
+      - delay: 800ms
       - if:
-          condition: {lambda: 'return millis() - id(swipe_ms) > 400 && id(current_mode) == 0;'}
+          condition: {lambda: 'return id(rotary_button).state && !id(turned_while_held) && id(current_mode) == 0;'}
           then:
-            - homeassistant.action: {action: media_player.media_play_pause, data: {entity_id: media_player.club}}
+            - lambda: 'id(hold_hint) = true;'
+            - script.execute: {id: toast, msg: "LET GO TO STOP ALL"}
 
-  - id: swipe_act
+  - id: hold_hint_end
     then:
-      - lambda: 'id(pa) = id(current_mode);'
+      - script.stop: hold_hint_start
       - if:
-          condition: {lambda: 'return id(pa) == 0 && id(swipe) == 4;'}
-          then: [{script.execute: open_playlists}]
-      # playlists: any swipe goes back
+          condition: {lambda: 'return id(hold_hint);'}
+          then:
+            - lambda: 'id(hold_hint) = false; id(toast_ms) = 0;'
+            - script.execute: update_np
+
+  # a short line in place of the artist, so a press is acknowledged at once
+  - id: toast
+    mode: restart
+    parameters:
+      msg: std::string
+    then:
+      - lambda: |-
+          id(toast_ms) = millis() + (id(hold_hint) ? 60000 : 1600);
+          lv_label_set_text((lv_obj_t *) id(noc_artist), msg.c_str());
+      - delay: 1600ms
       - if:
-          condition: {lambda: 'return id(pa) == 6;'}
-          then: [{script.execute: pl_back}]
+          condition: {lambda: 'return !id(hold_hint);'}
+          then:
+            - lambda: 'id(toast_ms) = 0;'
+            - script.execute: update_np
 
   # ══ NOW PLAYING ═══════════════════════════════════════════════════════════
+  # Volume goes to HA as the player's new level plus the change since the last
+  # send; script.rotary_volume moves every grouped room by that same change.
   - id: vol_send
     mode: restart
     then:
       - delay: 150ms
-      - homeassistant.action:
-          action: media_player.volume_set
-          data:
-            entity_id: media_player.club
-            volume_level: !lambda 'return id(vol_local);'
+      - if:
+          condition: {lambda: 'return ${group_vol};'}
+          then:
+            - homeassistant.action:
+                action: script.rotary_volume
+                data:
+                  entity: ${player}
+                  level: !lambda 'return id(vol_local);'
+                  delta: !lambda 'return id(vol_local) - id(vol_sent);'
+          else:
+            - homeassistant.action:
+                action: media_player.volume_set
+                data:
+                  entity_id: ${player}
+                  volume_level: !lambda 'return id(vol_local);'
+      - lambda: 'id(vol_sent) = id(vol_local);'
 
   - id: seek_send
     mode: restart
@@ -636,7 +559,7 @@ script:
       - homeassistant.action:
           action: media_player.media_seek
           data:
-            entity_id: media_player.club
+            entity_id: ${player}
             seek_position: !lambda 'return (int) id(pos_s);'
 
   # Pill's second line doubles as the readout while turning (1) or scrubbing (2)
@@ -705,112 +628,17 @@ script:
           if (!id(media_playing)) a = "Paused";
           for (auto &c : a) if ((unsigned char) c < 0x80) c = toupper((unsigned char) c);
           lv_label_set_text((lv_obj_t *) id(noc_title), t.c_str());
-          lv_label_set_text((lv_obj_t *) id(noc_artist), a.c_str());
+          if (millis() >= id(toast_ms)) lv_label_set_text((lv_obj_t *) id(noc_artist), a.c_str());
+          lv_label_set_text((lv_obj_t *) id(noc_room), id(room_txt).c_str());
           lv_obj_set_style_opa((lv_obj_t *) id(noc_title), id(media_playing) ? LV_OPA_COVER : LV_OPA_50, LV_PART_MAIN);
           lv_obj_set_style_image_opa((lv_obj_t *) id(noc_bg), id(media_playing) ? 235 : 120, LV_PART_MAIN);
+          // the progress hairline only makes sense for a track with a length
+          if (id(dur_s) > 0 && !id(media_is_tv)) lv_obj_remove_flag((lv_obj_t *) id(noc_prog), LV_OBJ_FLAG_HIDDEN);
+          else lv_obj_add_flag((lv_obj_t *) id(noc_prog), LV_OBJ_FLAG_HIDDEN);
           // night face: track info only while something is actually playing
           bool on = id(media_playing) && ok(t) && t != "Nothing playing";
           lv_label_set_text((lv_obj_t *) id(nt_title), on ? t.c_str() : "");
           lv_label_set_text((lv_obj_t *) id(nt_artist), on ? a.c_str() : "");
-
-  # ══ PLAYLISTS ═════════════════════════════════════════════════════════════
-  # close / hold / swipe: from a list back to the carousel, from the carousel out
-  - id: pl_back
-    then:
-      - script.execute: screen_timeout_timer
-      - if:
-          condition: {lambda: 'return id(pl_list) != 0;'}
-          then:
-            - lambda: 'id(pl_list) = 0;'
-            - script.execute: pl_render
-            - script.execute: page_timeout
-          else:
-            - script.execute: switch_to_now
-
-  - id: pl_render
-    then:
-      - lambda: |-
-          int L = id(pl_list);
-          auto vis = [](lv_obj_t *o, bool v) { if (v) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN); };
-          lv_obj_t *mix[] = {(lv_obj_t *) id(pl_lb), (lv_obj_t *) id(pl_rb), (lv_obj_t *) id(pl_cb), (lv_obj_t *) id(pl_name),
-                             (lv_obj_t *) id(pl_dots), (lv_obj_t *) id(pl_ug)};
-          for (auto o : mix) vis(o, L == 0);
-          vis((lv_obj_t *) id(pl_listv), L != 0);
-          lv_label_set_text((lv_obj_t *) id(pl_head), L == 0 ? "PLAYLISTS" : L == 1 ? "FAVOURITES" : "ALBUMS");
-          lv_label_set_text((lv_obj_t *) id(pl_x), L == 0 ? "\uF00D" : "\uF053");
-          if (L == 0) return;
-          const std::vector<std::string> &v = L == 1 ? id(fav_v) : id(alb_v);
-          int n = v.size();
-          int &ix = L == 1 ? id(fav_idx) : id(alb_idx);
-          if (ix > n - 1) ix = n - 1; if (ix < 0) ix = 0;
-          // keep the big title to two lines: cut at a word, UTF-8 safe
-          auto cut = [](std::string s, size_t m) {
-            if (s.size() <= m) return s;
-            size_t p = s.rfind(' ', m); if (p == std::string::npos || p < m / 2) p = m;
-            while (p > 0 && (s[p] & 0xC0) == 0x80) p--;
-            return s.substr(0, p) + "\u2026";
-          };
-          std::string t = n ? cut(v[ix], 40) : std::string(L == 1 ? "No favourites" : "No albums");
-          std::string a = (L == 2 && ix < (int) id(art_v).size()) ? id(art_v)[ix] : std::string("");
-          lv_label_set_text((lv_obj_t *) id(pl_st), t.c_str());
-          lv_label_set_text((lv_obj_t *) id(pl_sa), a.c_str());
-          vis((lv_obj_t *) id(pl_sa), !a.empty());
-          lv_obj_t *rows[4] = {(lv_obj_t *) id(pl_r0), (lv_obj_t *) id(pl_r1), (lv_obj_t *) id(pl_r2), (lv_obj_t *) id(pl_r3)};
-          int off[4] = {-2, -1, 1, 2};
-          for (int i = 0; i < 4; i++) {
-            int j = ix + off[i];
-            lv_label_set_text(rows[i], (j >= 0 && j < n) ? v[j].c_str() : "");
-          }
-          char c[24]; snprintf(c, sizeof(c), n ? "%d / %d" : "", ix + 1, n);
-          lv_label_set_text((lv_obj_t *) id(pl_cnt), c);
-      - lambda: |-
-          if (id(pl_list) != 0) return;
-          static image::Image *const ic[7] = {id(icon_disco), id(icon_house), id(icon_mos), id(icon_pdm), id(icon_dfp), id(icon_fav), id(icon_alb)};
-          static const char *const n[7] = {"Disco", "House", "MOS", "PDM", "DFP", "Favourites", "Albums"};
-          int s = id(pl_sel);
-          lv_image_set_src((lv_obj_t *) id(pl_c_icon), ic[s]->get_lv_image_dsc());
-          lv_image_set_src((lv_obj_t *) id(pl_l_icon), ic[(s + 6) % 7]->get_lv_image_dsc());
-          lv_image_set_src((lv_obj_t *) id(pl_r_icon), ic[(s + 1) % 7]->get_lv_image_dsc());
-          lv_label_set_text((lv_obj_t *) id(pl_name), n[s]);
-          lv_obj_t *d[7] = {(lv_obj_t *) id(pd0), (lv_obj_t *) id(pd1), (lv_obj_t *) id(pd2), (lv_obj_t *) id(pd3),
-                            (lv_obj_t *) id(pd4), (lv_obj_t *) id(pd5), (lv_obj_t *) id(pd6)};
-          for (int i = 0; i < 7; i++)
-            lv_obj_set_style_bg_opa(d[i], i == s ? LV_OPA_COVER : LV_OPA_20, LV_PART_MAIN);
-
-  - id: pl_play
-    then:
-      - if:
-          condition: {lambda: 'return id(pl_list) != 0;'}
-          then:
-            - if:
-                condition: {lambda: 'return (id(pl_list) == 1 ? id(fav_v).size() : id(alb_v).size()) > 0;'}
-                then:
-                  - homeassistant.action:
-                      action: script.rotary_play_list
-                      data:
-                        kind: !lambda 'return std::string(id(pl_list) == 1 ? "fav" : "album");'
-                        idx: !lambda 'return to_string(id(pl_list) == 1 ? id(fav_idx) : id(alb_idx));'
-                  - script.execute: switch_to_now
-          else:
-            - if:
-                condition: {lambda: 'return id(pl_sel) >= 5;'}
-                then:
-                  - lambda: 'id(pl_list) = id(pl_sel) - 4;'
-                  - script.execute: pl_render
-                  - script.execute: page_timeout
-                else:
-                  - script.execute: pl_play_mix
-
-  - id: pl_play_mix
-    then:
-      - homeassistant.action:
-          action: script.turn_on
-          data:
-            entity_id: !lambda |-
-              static const char *const s[] = {"script.play_disco", "script.play_house",
-                "script.play_mos", "script.play_pdm", "script.play_dfp"};
-              return std::string(s[id(pl_sel)]);
-      - script.execute: switch_to_now
 
 
 interval:
@@ -858,6 +686,8 @@ interval:
             id(pos_s) += 1;
             if (id(dur_s) > 0 && id(pos_s) > id(dur_s)) id(pos_s) = id(dur_s);
           }
+          int pv = id(dur_s) > 0 ? (int) (id(pos_s) * 1000.0f / id(dur_s)) : 0;
+          if (pv != lv_arc_get_value((lv_obj_t *) id(noc_prog))) lv_arc_set_value((lv_obj_t *) id(noc_prog), pv);
   # --- album art: retry a failed download
   - interval: 30s
     then:
@@ -906,6 +736,10 @@ binary_sensor:
       inverted: true
     on_press:
       - lambda: 'id(turned_while_held) = false;'
+      - script.execute: hold_hint_start
+    on_release:
+      - script.execute: hold_hint_end
+    # press = play/pause · double = next · triple = previous · hold = stop everywhere
     on_multi_click:
       - timing:
           - ON for at most 400ms
@@ -914,33 +748,23 @@ binary_sensor:
           - OFF for at most 400ms
           - ON for at most 400ms
           - OFF for at least 400ms
-        then:
-          - script.execute: screen_timeout_timer
-          - if:
-              condition: {lambda: 'return id(current_mode) == 0;'}
-              then:
-                - homeassistant.action: {action: media_player.media_previous_track, data: {entity_id: media_player.club}}
+        then: [{script.execute: knob_prev}]
       - timing:
           - ON for at most 400ms
           - OFF for at most 400ms
           - ON for at most 400ms
           - OFF for at least 400ms
-        then:
-          - script.execute: screen_timeout_timer
-          - if:
-              condition: {lambda: 'return id(current_mode) == 0;'}
-              then:
-                - homeassistant.action: {action: media_player.media_next_track, data: {entity_id: media_player.club}}
+        then: [{script.execute: knob_next}]
       - timing:
-          - ON for 50ms to 400ms
+          - ON for 50ms to 500ms
           - OFF for at least 400ms
         then:
           - if:
               condition: {lambda: 'return !id(turned_while_held);'}
               then: [{script.execute: knob_press}]
-      # long press fires on release, so hold + turn (scrub) doesn't also trigger it
+      # fires on release, so hold + turn (scrub) never stops the music
       - timing:
-          - ON for at least 600ms
+          - ON for at least 800ms
           - OFF for at least 20ms
         then:
           - if:
@@ -963,28 +787,29 @@ sensor:
 
   - platform: homeassistant
     id: ha_media_volume
-    entity_id: media_player.club
+    entity_id: ${player}
     attribute: volume_level
     on_value:
       then:
         - lambda: |-
             if (isnan(x)) return;
-            if (millis() - id(vol_touched_ms) > 2500) id(vol_local) = x;
+            if (millis() - id(vol_touched_ms) > 2500) { id(vol_local) = x; id(vol_sent) = x; }
 
   - platform: homeassistant
     id: ha_media_pos
-    entity_id: media_player.club
+    entity_id: ${player}
     attribute: media_position
     on_value:
       then:
         - lambda: 'if (!isnan(x) && millis() - id(seek_touched_ms) > 2500) id(pos_s) = x;'
   - platform: homeassistant
     id: ha_media_dur
-    entity_id: media_player.club
+    entity_id: ${player}
     attribute: media_duration
     on_value:
       then:
         - lambda: 'id(dur_s) = isnan(x) ? 0 : x;'
+        - script.execute: update_np
 
 button:
   - platform: restart
@@ -998,23 +823,9 @@ touchscreen:
     # fail the chip-ID probe, so don't let the probe disable touch
     skip_probe: true
     on_touch:
-      - lambda: 'id(tx0) = touch.x; id(ty0) = touch.y; id(tx1) = touch.x; id(ty1) = touch.y;'
       # the CST816 throws phantom touches at the (479,479) corner every minute or two;
-      # anything outside the round glass must not wake the screen
+      # anything outside the round glass must not wake the screen. Taps do nothing else.
       - if:
           condition:
             lambda: 'int dx = touch.x - 240, dy = touch.y - 240; return dx * dx + dy * dy < 236 * 236;'
           then: [{script.execute: screen_timeout_timer}]
-    on_update:
-      - lambda: 'for (auto &t : touches) { id(tx1) = t.x; id(ty1) = t.y; break; }'
-    on_release:
-      - lambda: |-
-          int dx = id(tx1) - id(tx0), dy = id(ty1) - id(ty0);
-          int sw = 0;
-          if (abs(dx) > 60 && abs(dx) > abs(dy) * 1.3f) sw = dx < 0 ? 1 : 2;
-          else if (abs(dy) > 70 && abs(dy) > abs(dx) * 1.3f) sw = dy < 0 ? 3 : 4;
-          id(swipe) = sw;
-          if (sw) id(swipe_ms) = millis();
-      - if:
-          condition: {lambda: 'return id(swipe) != 0 && !id(night_active);'}
-          then: [{script.execute: swipe_act}]

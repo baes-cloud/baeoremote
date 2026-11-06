@@ -1,0 +1,53 @@
+# Helpers for the two BæoRemote knobs (rotary-display-1 = Club, -2 = Bedroom).
+# Live copy: /config/packages/rotary_remote.yaml
+script:
+  # Club's knob sends Club's new level plus the change since its last send;
+  # every other room grouped with Club moves by that same change, so the
+  # rooms keep their balance (like the Sonos app's group volume).
+  rotary_volume:
+    alias: "Rotary – group volume"
+    icon: mdi:knob
+    mode: queued
+    max: 20
+    fields:
+      entity: {description: "Player the knob drives", example: media_player.club}
+      level: {description: "Its new volume, 0-1", example: 0.3}
+      delta: {description: "Change since the last send", example: 0.02}
+    sequence:
+      - action: media_player.volume_set
+        target: {entity_id: "{{ entity }}"}
+        data:
+          volume_level: "{{ [[level | float(0), 0] | max, 1] | min }}"
+      - variables:
+          others: "{{ (state_attr(entity, 'group_members') or []) | reject('eq', entity) | list }}"
+      - repeat:
+          for_each: "{{ others }}"
+          sequence:
+            - action: media_player.volume_set
+              continue_on_error: true
+              target: {entity_id: "{{ repeat.item }}"}
+              data:
+                volume_level: >-
+                  {{ [[(state_attr(repeat.item, 'volume_level') | float(0)) + (delta | float(0)), 0] | max, 1] | min | round(2) }}
+
+  # Hold either knob: stop the music on every Sonos / Music Assistant player.
+  # A Sonos on its TV input is left alone, so this never mutes the telly.
+  rotary_stop_all:
+    alias: "Rotary – stop all music"
+    icon: mdi:stop-circle-outline
+    mode: single
+    sequence:
+      - variables:
+          players: >-
+            {{ (integration_entities('sonos') + integration_entities('music_assistant'))
+               | select('match', 'media_player\.')
+               | select('is_state', ['playing', 'buffering'])
+               | reject('is_state_attr', 'source', 'TV')
+               | reject('is_state_attr', 'media_title', 'TV')
+               | list }}
+      - repeat:
+          for_each: "{{ players }}"
+          sequence:
+            - action: media_player.media_stop
+              continue_on_error: true
+              target: {entity_id: "{{ repeat.item }}"}

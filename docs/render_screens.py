@@ -18,6 +18,13 @@ def text(d, cx, cy, s, f, fill, track=0, anchor_mid=True):
         x += f.getlength(c) + track
     base.alpha_composite(ov)
 
+def wordmark(d, cy, fill):
+    # BÆO in Syne Bold + SOUND in Syne Regular, tracked 7, centred as one line
+    fb, fr = font('Syne', 700, 22), font('Syne', 400, 22)
+    w = lambda s, f: sum(f.getlength(c) for c in s) + 7 * (len(s) - 1)
+    wb, wr = w('BÆO', fb), w('SOUND', fr); x0 = 240 - (wb + 7 + wr) / 2
+    text(d, x0 + wb / 2, cy, 'BÆO', fb, fill, 7); text(d, x0 + wb + 7 + wr / 2, cy, 'SOUND', fr, fill, 7)
+
 def blend(d, fn):
     base = d._image; ov = Image.new('RGBA', base.size); fn(ImageDraw.Draw(ov)); base.alpha_composite(ov)
 
@@ -70,15 +77,17 @@ def round_mask(im):
     out.paste(im.convert('RGB'), (20, 20), m)
     return out
 
-def nocturne(title, artist, clock='16:10', vol=None):
+def nocturne(title, artist, clock='16:10', vol=None, room='CLUB', prog=0.42):
     base = Image.new('RGBA', (S, S), (5, 5, 6, 255))
     a = art().convert('RGBA'); a.putalpha(235)
     base = Image.alpha_composite(base, a); base = vignette(base)
     ov = Image.new('RGBA', (S, S)); d = ImageDraw.Draw(ov)
     v = 0.38 if vol is None else vol / 100
     arc(d, 462, 12, v, (233, 237, 242, 36)); arc(d, 462, 2, 1, (255, 255, 255, 31)); arc(d, 462, 3 if vol else 2, v, (242, 244, 247, 255))
+    if prog is not None: arc(d, 432, 1, 1, (255, 255, 255, 15)); arc(d, 432, 1, prog, (233, 237, 242, 97))
     base = Image.alpha_composite(base, ov); d = ImageDraw.Draw(base)
     text(d, 240, 70 + 26, clock, font('Syne', 500, 40), (233, 237, 242, 191), 3)
+    text(d, 240, 124 + 11, room, font('Syne', 700, 18), (233, 237, 242, 115), 4)
     if vol is not None:
         text(d, 240, 240, str(vol), font('Manrope', 300, 104), (246, 246, 244, 255), -2)
     else:
@@ -87,7 +96,7 @@ def nocturne(title, artist, clock='16:10', vol=None):
         h = len(lines) * lh + 6 + 22; y = 240 - h / 2 + lh / 2
         for ln in lines: text(d, 240, y, ln, ft, (246, 246, 244, 255)); y += lh
         text(d, 240, y - lh / 2 + 6 + 11, artist.upper(), fa, (233, 237, 242, 191), 4)
-    text(d, 240, 240 + 122, 'BÆOREMOTE', font('Syne', 700, 22), (233, 237, 242, 179), 7)
+    wordmark(d, 240 + 122, (233, 237, 242, 179))
     return round_mask(base)
 
 def night(title, artist, clock='02:14'):
@@ -108,60 +117,15 @@ def night(title, artist, clock='02:14'):
     text(d, 240, 240 - 112, title, font('Manrope', 400, 20), (0xA5, 0x64, 0x44, 255))
     text(d, 240, 240 - 86, artist.upper(), font('Manrope', 700, 14), (0xA5, 0x64, 0x44, 255), 3)
     text(d, 240, 240, clock, font('Manrope', 300, 104), (0xB8, 0x70, 0x4A, 255), -2)
-    text(d, 240, 240 + 120, 'BÆOREMOTE', font('Syne', 700, 22), (0xA5, 0x64, 0x44, 255), 7)
+    wordmark(d, 240 + 120, (0xA5, 0x64, 0x44, 255))
     return round_mask(im)
-
-def playlists():
-    im = Image.new('RGBA', (S, S)); d = ImageDraw.Draw(im)
-    for y in range(S):
-        t = y / S; c = tuple(int(a + (b - a) * t) for a, b in zip((0x2A, 0x2B, 0x2F), (0x0B, 0x0B, 0x0D)))
-        d.line([(0, y), (S, y)], fill=c + (255,))
-    text(d, 240, 240 - 150, 'PLAYLISTS', font('Syne', 700, 18), (0xD6, 0xD8, 0xDC, 255), 5)
-    blend(d, lambda o: o.ellipse((212, 16, 268, 72), fill=(0x1B, 0x1C, 0x1F, 255), outline=(0xC9, 0xCB, 0xCF, 77)))
-    d.line([(233, 37), (247, 51)], fill=(0xD6, 0xD8, 0xDC), width=3); d.line([(247, 37), (233, 51)], fill=(0xD6, 0xD8, 0xDC), width=3)
-    disc = Image.open('/home/bae/baeoremote/tt/pl_disc_140.png').convert('RGBA')
-    def icon(n, h): i = Image.open(f'/home/bae/baeoremote/{n}').convert('RGBA'); i.thumbnail((h * 2, h)); return i
-    for x, n, sc, op in ((-150, 'icon_alb_w.png', 0.72, 0.4), (150, 'icon_house_w.png', 0.72, 0.4), (0, 'icon_disco_w.png', 1.0, 1.0)):
-        dz = disc.resize((int(140 * sc), int(140 * sc)), Image.LANCZOS); ic = icon(n, int(44 * sc))
-        layer = Image.new('RGBA', (S, S))
-        layer.alpha_composite(dz, (240 + x - dz.width // 2, 224 - dz.height // 2))
-        layer.alpha_composite(ic, (240 + x - ic.width // 2, 224 - ic.height // 2))
-        if op < 1: layer.putalpha(layer.getchannel('A').point(lambda a: int(a * op)))
-        im = Image.alpha_composite(im, layer)
-    d = ImageDraw.Draw(im)
-    text(d, 240, 240 + 84, 'Disco', font('Syne', 400, 40), (0xF2, 0xF2, 0xF0, 255))
-    for i in range(7):
-        x = 240 - 48 + 16 * i; blend(d, lambda o, x=x, i=i: o.ellipse((x - 4, 240 + 120, x + 4, 240 + 128), fill=(0xD6, 0xD8, 0xDC, 255 if i == 0 else 51)))
-    blend(d, lambda o: o.rounded_rectangle((125, 240 + 156, 355, 240 + 196), radius=20, fill=(0x1B, 0x1C, 0x1F, 255), outline=(0xC9, 0xCB, 0xCF, 77)))
-    text(d, 240, 240 + 176, 'UNGROUP ALL ROOMS', font('Syne', 700, 18), (0xD6, 0xD8, 0xDC, 255), 2)
-    return round_mask(im)
-
-def albums():
-    im = playlists_bg(); d = ImageDraw.Draw(im)
-    text(d, 240, 240 - 150, 'ALBUMS', font('Syne', 700, 18), (0xD6, 0xD8, 0xDC, 255), 5)
-    blend(d, lambda o: o.ellipse((212, 16, 268, 72), fill=(0x1B, 0x1C, 0x1F, 255), outline=(0xC9, 0xCB, 0xCF, 77)))
-    d.line([(244, 36), (236, 44)], fill=(0xD6, 0xD8, 0xDC), width=3); d.line([(236, 44), (244, 52)], fill=(0xD6, 0xD8, 0xDC), width=3)
-    f20 = font('Manrope', 400, 20)
-    for y, s, o in ((-128, 'Ministry of Sound: Sessions Four', 56), (-88, 'Ministry of Sound: Sessions One', 122), (88, 'Ministry of Sound: Sessions Seven', 122), (128, 'Ministry of Sound: Sessions Three', 56)):
-        text(d, 240, 240 + y, s, f20, (0xF2, 0xF2, 0xF0, o))
-    ft = font('Syne', 400, 32)
-    for i, ln in enumerate(wrap('Ministry of Sound: Sessions Six', ft, 360)): text(d, 240, 240 - 30 + i * 38, ln, ft, (0xF2, 0xF2, 0xF0, 255))
-    text(d, 240, 240 + 36, 'John Course', f20, (0xD6, 0xD8, 0xDC, 179))
-    text(d, 240, 240 + 168, '5 / 39', font('Syne', 600, 13), (0xD6, 0xD8, 0xDC, 140), 2)
-    return round_mask(im)
-
-def playlists_bg():
-    im = Image.new('RGBA', (S, S)); d = ImageDraw.Draw(im)
-    for y in range(S):
-        t = y / S; d.line([(0, y), (S, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip((0x2A, 0x2B, 0x2F), (0x0B, 0x0B, 0x0D))) + (255,))
-    return im
 
 out = '/home/bae/baeoremote/docs/screens/'
 shots = [('now-playing.png', nocturne('See The Way', 'The Chainsmokers')),
          ('volume.png', nocturne('', '', vol=38)),
-         ('night.png', night('See The Way', 'The Chainsmokers')),
-         ('playlists.png', playlists()),
-         ('albums.png', albums())]
+         ('grouped.png', nocturne('Lady (Hear Me Tonight)', 'Let go to stop all', room='CLUB + LIVING ROOM', prog=0.71)),
+         ('bedroom.png', nocturne('Teardrop', 'Massive Attack', clock='22:41', room='BEDROOM', prog=0.18)),
+         ('night.png', night('See The Way', 'The Chainsmokers'))]
 for n, im in shots: im.save(out + n)
 sheet = Image.new('RGBA', (len(shots) * 540 + 20, 560), (246, 245, 241, 255))
 for i, (n, im) in enumerate(shots): sheet.alpha_composite(im, (20 + i * 540, 20))
