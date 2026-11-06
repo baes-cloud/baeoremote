@@ -198,9 +198,15 @@ script:
                 id(current_mode) = 9;
             - script.execute: update_night_clock
             - lvgl.widget.show: grp_night
+            # the "Night Brightness" slider is for 22:00-07:00; by day the idle
+            # clock stays readable (never below 40%)
             - light.control:
                 id: display_backlight
-                brightness: !lambda 'return id(night_brightness).state / 100.0f;'
+                brightness: !lambda |-
+                  auto t = id(ha_time).now();
+                  bool late = t.is_valid() && (t.hour >= 22 || t.hour < 7);
+                  float nb = id(night_brightness).state / 100.0f;
+                  return late ? nb : (nb > 0.4f ? nb : 0.4f);
 
   - id: wake_from_night
     mode: restart
