@@ -16,6 +16,27 @@ image:
   - file: "tt/art_ph.png"
     id: art_ph
     type: RGB565
+  # pick-to-play LP labels (order = script.rotary_play pick numbers)
+  - file: "tt/covers/pdm_london.png"
+    id: cv_pdm_london
+    type: RGB565
+    transparency: alpha_channel
+  - file: "tt/covers/pdm_paradise.png"
+    id: cv_pdm_paradise
+    type: RGB565
+    transparency: alpha_channel
+  - file: "tt/covers/dfp_love.png"
+    id: cv_dfp_love
+    type: RGB565
+    transparency: alpha_channel
+  - file: "tt/covers/dfp_boiler.png"
+    id: cv_dfp_boiler
+    type: RGB565
+    transparency: alpha_channel
+  - file: "tt/covers/gayfm.png"
+    id: cv_gayfm
+    type: RGB565
+    transparency: alpha_channel
 
 online_image:
   - id: album_blur
@@ -127,6 +148,39 @@ globals:
   - id: hold_hint
     type: bool
     initial_value: 'false'
+  - id: pick_sel               # pick-to-play: which LP is in the middle
+    type: int
+    initial_value: '0'
+  - id: pick_open_ms           # taps right after opening don't count as a pick
+    type: uint32_t
+    initial_value: '0'
+  - id: user_wake              # this wake came from a hand on the knob / glass
+    type: bool
+    initial_value: 'false'
+  - id: wake_by_user
+    type: bool
+    initial_value: 'false'
+  - id: pick_started_ms        # a pick was just sent: give Sonos time to start it
+    type: uint32_t
+    initial_value: '0'
+  - id: paused_ms              # when the player went to paused (0 = not paused)
+    type: uint32_t
+    initial_value: '0'
+  - id: pick_ok                # picker allowed on a touch / press (set by pick_check)
+    type: bool
+    initial_value: 'false'
+  - id: pick_turn_ok           # ...and on a knob turn (never on TV: the turn stays volume)
+    type: bool
+    initial_value: 'false'
+  - id: tx0                    # touch start / latest x, for swipes on the picker
+    type: int
+    initial_value: '0'
+  - id: tx1
+    type: int
+    initial_value: '0'
+  - id: swipe_ms               # a swipe just happened: the tap under it doesn't count
+    type: uint32_t
+    initial_value: '0'
   - id: tv_title               # what's on the TV (borrowed from Plex / the Streamer)
     type: std::string
     initial_value: '""'
@@ -148,6 +202,7 @@ script:
           then:
             - script.execute: wake_from_night
           else:
+            - lambda: 'id(user_wake) = false;'
             - script.execute: apply_awake_brightness
       - delay: ${night_idle}
       - if:
@@ -211,7 +266,8 @@ script:
   - id: wake_from_night
     mode: restart
     then:
-      - lambda: 'id(night_active) = false;'
+      - lambda: 'id(night_active) = false; id(wake_by_user) = id(user_wake); id(user_wake) = false;'
+      - script.execute: pick_check
       - light.control:
           id: display_backlight
           brightness: !lambda 'return id(media_is_tv) ? 0.5f : 1.0f;'
@@ -221,7 +277,11 @@ script:
       - if:
           condition: {lambda: 'return id(alarm_popup_up);'}
           then: [{lambda: 'id(current_mode) = 9;'}]
-          else: [{script.execute: switch_to_now}]
+          else:
+            - if:
+                condition: {lambda: 'return id(wake_by_user) && id(pick_turn_ok);'}
+                then: [{script.execute: open_picker}]
+                else: [{script.execute: switch_to_now}]
 
   - id: update_night_clock
     then:
@@ -420,19 +480,123 @@ script:
 
   - id: switch_to_now
     then:
-      - lambda: 'id(current_mode) = 0;'
+      - script.stop: pick_timeout
+      - lambda: |-
+          id(current_mode) = 0;
+          lv_obj_add_flag((lv_obj_t *) id(pk_grp), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag((lv_obj_t *) id(noc_title), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag((lv_obj_t *) id(noc_artist), LV_OBJ_FLAG_HIDDEN);
       - script.execute: update_np
       - script.execute: update_clock
+
+  # ══ PICK TO PLAY ══════════════════════════════════════════════════════════
+  # Nothing playing + a hand on the knob or glass: little LPs to choose from.
+  # Turn = browse, press or tap the middle one = play, hold = back.
+  # When the picker may open. Club (pick_more): stopped, paused for over a
+  # minute, or on the TV input. Bedroom: whenever nothing is playing.
+  - id: pick_check
+    then:
+      - lambda: |-
+          bool paused = id(media_state).state == "paused", tv = id(media_is_tv);
+          if (${pick_more}) {
+            bool long_pause = paused && id(paused_ms) != 0 && millis() - id(paused_ms) > 60000;
+            id(pick_ok) = (!id(media_playing) && !tv && !paused) || long_pause || tv;
+            id(pick_turn_ok) = id(pick_ok) && !tv;
+          } else {
+            id(pick_ok) = !id(media_playing) && !tv;
+            id(pick_turn_ok) = id(pick_ok);
+          }
+          // a pick is still starting (streams can take a few seconds): don't reopen
+          if (id(pick_started_ms) != 0 && millis() - id(pick_started_ms) < 15000 && !id(media_playing))
+            id(pick_ok) = id(pick_turn_ok) = false;
+
+  - id: open_picker
+    then:
+      - lambda: |-
+          id(current_mode) = 5;
+          id(pick_open_ms) = millis();
+          lv_obj_add_flag((lv_obj_t *) id(noc_title), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag((lv_obj_t *) id(noc_artist), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag((lv_obj_t *) id(noc_num), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag((lv_obj_t *) id(pk_grp), LV_OBJ_FLAG_HIDDEN);
+      - script.execute: pick_render
+      - script.execute: update_np
+      - script.execute: pick_timeout
+
+  - id: pick_timeout
+    mode: restart
+    then:
+      - delay: 20s
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5;'}
+          then: [{script.execute: switch_to_now}]
+
+  - id: pick_move
+    parameters:
+      dir: int
+    then:
+      - lambda: 'id(pick_sel) = (id(pick_sel) + dir + 5) % 5;'
+      - script.execute: pick_render
+      - script.execute: pick_timeout
+
+  - id: pick_render
+    then:
+      - lambda: |-
+          static image::Image *const cv[5] = {id(cv_pdm_london), id(cv_pdm_paradise), id(cv_dfp_love), id(cv_dfp_boiler), id(cv_gayfm)};
+          int s = id(pick_sel);
+          lv_image_set_src((lv_obj_t *) id(pk_c_cv), cv[s]->get_lv_image_dsc());
+          lv_image_set_src((lv_obj_t *) id(pk_l_cv), cv[(s + 4) % 5]->get_lv_image_dsc());
+          lv_image_set_src((lv_obj_t *) id(pk_r_cv), cv[(s + 1) % 5]->get_lv_image_dsc());
+
+  # taps on the LPs: middle = play, sides = bring it to the middle
+  - id: pick_tap
+    mode: restart
+    parameters:
+      which: int
+    then:
+      - delay: 80ms
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && millis() - id(swipe_ms) > 300;'}
+          then:
+            - script.execute: screen_timeout_timer
+            - if:
+                condition: {lambda: 'return which == 0;'}
+                then: [{script.execute: pick_play}]
+                else: [{script.execute: {id: pick_move, dir: !lambda 'return which;'}}]
+
+  - id: pick_play
+    then:
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && millis() - id(pick_open_ms) > 600;'}
+          then:
+            - homeassistant.action:
+                action: script.rotary_play
+                data:
+                  entity: "${player}"
+                  pick: !lambda 'return id(pick_sel);'
+            - lambda: 'id(pick_started_ms) = millis();'
+            - script.execute: switch_to_now
+            - script.execute: {id: toast, msg: "STARTING"}
 
   # ══ INPUT ═════════════════════════════════════════════════════════════════
   - id: knob_turn
     parameters:
       dir: int
     then:
+      - lambda: 'id(user_wake) = true;'
       - script.execute: screen_timeout_timer
+      - script.execute: pick_check
       - lambda: |-
           id(pa) = id(current_mode);
           if (id(rotary_button).state) { id(turned_while_held) = true; id(pa) += 100; }
+          // nothing playing: the first turn opens the picker instead of moving the volume
+          if (id(pa) == 0 && id(pick_turn_ok)) id(pa) = 50;
+      - if:
+          condition: {lambda: 'return id(pa) == 50;'}
+          then: [{script.execute: open_picker}]
+      - if:
+          condition: {lambda: 'return id(pa) == 5 || id(pa) == 105;'}
+          then: [{script.execute: {id: pick_move, dir: !lambda 'return dir;'}}]
       # now playing: volume
       - if:
           condition: {lambda: 'return id(pa) == 0;'}
@@ -461,12 +625,31 @@ script:
 
   - id: knob_press
     then:
+      - lambda: 'id(user_wake) = true;'
       - script.execute: screen_timeout_timer
-      - lambda: 'id(pa) = id(current_mode);'
+      - script.execute: pick_check
+      - lambda: |-
+          id(pa) = id(current_mode);
+          // picker when allowed; a Bedroom pause (any length) still just resumes
+          bool paused = id(media_state).state == "paused";
+          if (id(pa) == 0 && id(pick_ok) && (${pick_more} || !paused)) id(pa) = 50;
+          // a pick is still starting: a second press would pause it
+          if (id(pa) == 0 && id(pick_started_ms) != 0 && millis() - id(pick_started_ms) < 15000 && !id(media_playing)) id(pa) = 51;
       - if:
           condition: {lambda: 'return id(pa) == 0;'}
           then:
             - homeassistant.action: {action: media_player.media_play_pause, data: {entity_id: "${player}"}}
+      - if:
+          condition: {lambda: 'return id(pa) == 50;'}
+          then: [{script.execute: open_picker}]
+      - if:
+          condition: {lambda: 'return id(pa) == 51;'}
+          then: [{script.execute: {id: toast, msg: "STARTING"}}]
+      - if:
+          condition: {lambda: 'return id(pa) == 5;'}
+          then:
+            - lambda: 'id(pick_open_ms) = 0;'
+            - script.execute: pick_play
 
   - id: knob_next
     then:
@@ -492,6 +675,9 @@ script:
     then:
       - lambda: 'id(pa) = id(current_mode);'
       - script.execute: screen_timeout_timer
+      - if:
+          condition: {lambda: 'return id(pa) == 5;'}
+          then: [{script.execute: switch_to_now}]
       - if:
           condition: {lambda: 'return id(pa) == 0 || (id(pa) == 9 && !id(alarm_popup_up));'}
           then:
@@ -635,7 +821,7 @@ script:
           for (auto &c : a) if ((unsigned char) c < 0x80) c = toupper((unsigned char) c);
           lv_label_set_text((lv_obj_t *) id(noc_title), t.c_str());
           if (millis() >= id(toast_ms)) lv_label_set_text((lv_obj_t *) id(noc_artist), a.c_str());
-          lv_label_set_text((lv_obj_t *) id(noc_room), id(room_txt).c_str());
+          lv_label_set_text((lv_obj_t *) id(noc_room), id(current_mode) == 5 ? "PLAY IN ${room_name}" : id(room_txt).c_str());
           lv_obj_set_style_opa((lv_obj_t *) id(noc_title), id(media_playing) ? LV_OPA_COVER : LV_OPA_50, LV_PART_MAIN);
           lv_obj_set_style_image_opa((lv_obj_t *) id(noc_bg), id(media_playing) ? 235 : 120, LV_PART_MAIN);
           // the progress hairline only makes sense for a track with a length
@@ -829,9 +1015,25 @@ touchscreen:
     # fail the chip-ID probe, so don't let the probe disable touch
     skip_probe: true
     on_touch:
+      - lambda: 'id(tx0) = touch.x; id(tx1) = touch.x;'
       # the CST816 throws phantom touches at the (479,479) corner every minute or two;
       # anything outside the round glass must not wake the screen. Taps do nothing else.
       - if:
           condition:
             lambda: 'int dx = touch.x - 240, dy = touch.y - 240; return dx * dx + dy * dy < 236 * 236;'
-          then: [{script.execute: screen_timeout_timer}]
+          then:
+            - lambda: 'id(user_wake) = true;'
+            - script.execute: screen_timeout_timer
+            - script.execute: pick_check
+            - if:
+                condition: {lambda: 'return id(current_mode) == 0 && !id(night_active) && id(pick_ok);'}
+                then: [{script.execute: open_picker}]
+    on_update:
+      - lambda: 'for (auto &t : touches) { id(tx1) = t.x; break; }'
+    # picker: swipe left / right to browse
+    on_release:
+      - if:
+          condition: {lambda: 'return id(current_mode) == 5 && abs(id(tx1) - id(tx0)) > 60;'}
+          then:
+            - lambda: 'id(swipe_ms) = millis();'
+            - script.execute: {id: pick_move, dir: !lambda 'return id(tx1) < id(tx0) ? 1 : -1;'}

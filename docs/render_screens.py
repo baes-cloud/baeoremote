@@ -99,6 +99,44 @@ def nocturne(title, artist, clock='16:10', vol=None, room='CLUB', prog=0.42):
     wordmark(d, 240 + 122, (233, 237, 242, 179))
     return round_mask(base)
 
+def lp_disc(d, cover, sc, opa, shadow):
+    SS = 3; D = d * SS
+    im = Image.new('RGBA', (D + 120, D + 120)); dr = ImageDraw.Draw(im); o = 60
+    if shadow:
+        sh = Image.new('RGBA', im.size); ImageDraw.Draw(sh).ellipse((o, o + 18, o + D, o + D + 18), fill=(0, 0, 0, 140))
+        im = Image.alpha_composite(im, sh.filter(ImageFilter.GaussianBlur(40))); dr = ImageDraw.Draw(im)
+    dr.ellipse((o, o, o + D, o + D), fill=(11, 11, 12, 255), outline=(52, 52, 58, 255), width=SS)
+    ov = Image.new('RGBA', im.size); od = ImageDraw.Draw(ov); c = o + D / 2
+    r = d - 10
+    while r > d * 0.6:
+        R = r * SS / 2; od.ellipse((c - R, c - R, c + R, c + R), outline=(255, 255, 255, 18), width=SS); r -= 12
+    for a0 in (205, 25):
+        R = (d - 8) * SS / 2; w = int(d * 0.16) * SS
+        od.arc((c - R, c - R, c + R, c + R), a0 - 90 + 90, a0 + 40, fill=(255, 255, 255, 15), width=w)
+    im = Image.alpha_composite(im, ov)
+    cv = Image.open('/home/bae/baeoremote/tt/covers/' + cover).convert('RGBA'); n = int(100 * sc * SS)
+    cv = cv.resize((n, n), Image.LANCZOS); im.alpha_composite(cv, (int(c - n / 2), int(c - n / 2)))
+    h = max(4, int(d * 0.035)) // 2 * 2 * SS / 2; ImageDraw.Draw(im).ellipse((c - h, c - h, c + h, c + h), fill=(11, 11, 12, 255), outline=(85, 85, 92, 255), width=SS)
+    im = im.resize((im.width // SS, im.height // SS), Image.LANCZOS)
+    if opa < 1: im.putalpha(im.getchannel('A').point(lambda a: int(a * opa)))
+    return im
+
+def picker(room='CLUB', sel=0):
+    covers = ['pdm_london.png', 'pdm_paradise.png', 'dfp_love.png', 'dfp_boiler.png', 'gayfm.png']
+    base = Image.new('RGBA', (S, S), (5, 5, 6, 255))
+    a = art().convert('RGBA'); a.putalpha(120)
+    base = Image.alpha_composite(base, a); base = vignette(base)
+    ov = Image.new('RGBA', (S, S)); d = ImageDraw.Draw(ov)
+    arc(d, 462, 2, 1, (255, 255, 255, 31)); arc(d, 462, 2, 0.38, (242, 244, 247, 255))
+    base = Image.alpha_composite(base, ov)
+    for x, dd, sc, op, sh, i in ((-152, 108, 0.58, 0.45, False, (sel + 4) % 5), (152, 108, 0.58, 0.45, False, (sel + 1) % 5), (0, 176, 1.0, 1.0, True, sel)):
+        im = lp_disc(dd, covers[i], sc, op, sh); base.alpha_composite(im, (240 + x - im.width // 2, 244 - im.height // 2))
+    d = ImageDraw.Draw(base)
+    text(d, 240, 70 + 26, '18:05', font('Syne', 500, 40), (233, 237, 242, 191), 3)
+    text(d, 240, 124 + 11, 'PLAY IN ' + room, font('Syne', 700, 18), (233, 237, 242, 115), 4)
+    wordmark(d, 240 + 122, (233, 237, 242, 179))
+    return round_mask(base)
+
 def night(title, artist, clock='02:14'):
     im = Image.new('RGBA', (S, S)); p = im.load()
     n0, n1, n2 = (0x0E, 0x0A, 0x08), (0x07, 0x05, 0x04), (0x03, 0x02, 0x02)
@@ -125,6 +163,8 @@ shots = [('now-playing.png', nocturne('See The Way', 'The Chainsmokers')),
          ('volume.png', nocturne('', '', vol=38)),
          ('grouped.png', nocturne('Lady (Hear Me Tonight)', 'Let go to stop all', room='CLUB + LIVING ROOM', prog=0.71)),
          ('bedroom.png', nocturne('Teardrop', 'Massive Attack', clock='22:41', room='BEDROOM', prog=0.18)),
+         ('pick.png', picker()),
+         ('pick-gayfm.png', picker('BEDROOM', 4)),
          ('night.png', night('See The Way', 'The Chainsmokers'))]
 for n, im in shots: im.save(out + n)
 sheet = Image.new('RGBA', (len(shots) * 540 + 20, 560), (246, 245, 241, 255))

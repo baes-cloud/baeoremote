@@ -17,6 +17,7 @@ A B&O Essence–inspired Sonos controller for a 480×480 round ESP32-S3 knob dis
 
 ## Screens
 - **Now playing (Nocturne)**: smoked glass over a soft blur of the current album art. Clock, then the room (and who it is grouped with), title and artist in the middle, a thin volume ring round the edge and a fainter track-progress hairline just inside it. When Club is on the TV input it shows the Plex / Google TV title and poster, or "ABC" for iview.
+- **Pick to play**: with nothing playing, any touch, turn or press (and waking the night clock by hand) shows three little LPs with cover art: PDM London 2026, PDM Welcome to Paradise, Dimitri In The House Of Love, Dimitri Boiler Room, Gay FM. Turn or swipe to browse, tap a side LP to bring it in, press or tap the middle one to play, hold to go back. It closes itself after 20 s or when music starts. The picks live in `script.rotary_play` and `tt/covers/`.
 - **Volume**: turning the knob swaps the title for a large volume numeral and lights the ring.
 - **Idle**: after 3 minutes the face dims if music is playing, otherwise a dim amber Manrope clock on near-black at *Night Brightness* ([spec](docs/BaeoRemote%20Face%20A%20Spec.pdf)).
 
@@ -24,7 +25,7 @@ A B&O Essence–inspired Sonos controller for a 480×480 round ESP32-S3 knob dis
 | Input | Action |
 |---|---|
 | Turn | Volume (hold + turn = scrub) |
-| Press | Play / pause |
+| Press | Play / pause (nothing to resume: open Pick to play) |
 | Double press | Next track |
 | Triple press | Previous track |
 | Hold (0.8 s, then let go) | Stop music on every speaker (a Sonos on its TV input is left alone) |

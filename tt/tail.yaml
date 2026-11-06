@@ -73,6 +73,9 @@ text_sensor:
     on_value:
       then:
         - lambda: 'id(media_is_tv) = ${has_tv} && (x == std::string("TV") || x == std::string("TV Audio"));'
+        - if:
+            condition: {lambda: 'return id(media_playing) && !id(media_is_tv) && id(current_mode) == 5;'}
+            then: [{script.execute: switch_to_now}]
         - script.execute: tv_refresh
         # back from the TV: put the music artwork back
         - if:
@@ -105,8 +108,16 @@ text_sensor:
     entity_id: ${player}
     on_value:
       then:
-        - lambda: 'id(media_playing) = (x == std::string("playing"));'
+        - lambda: |-
+            id(media_playing) = (x == std::string("playing"));
+            if (x != "paused") id(paused_ms) = 0;
+            if (id(media_playing)) id(pick_started_ms) = 0;
+            else if (id(paused_ms) == 0) id(paused_ms) = millis();
         - script.execute: update_np
+        # music started (not the TV): the picker has done its job
+        - if:
+            condition: {lambda: 'return id(media_playing) && !id(media_is_tv) && id(current_mode) == 5;'}
+            then: [{script.execute: switch_to_now}]
         # play/pause changes the idle behaviour (dim vs night clock): restart the timer
         - script.execute: screen_timeout_timer
   # Album art: HA's proxy URL carries a rotating token plus a "cache=" hash of

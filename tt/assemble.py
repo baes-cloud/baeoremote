@@ -4,9 +4,9 @@ import math, json, sys
 # conventions; everything else is shared.
 DEVICES = {
     '1': dict(name='rotary-display-1', ap='Rotary-Display-1', addr='10.0.1.122', sec='rotary',
-              player='media_player.club', room='CLUB', group_vol='true', has_tv='true'),
+              player='media_player.club', room='CLUB', group_vol='true', has_tv='true', pick_more='true'),
     '2': dict(name='rotary-display-2', ap='Rotary-Display-Bedroom', addr='10.0.1.50', sec='rotary2',
-              player='media_player.bedroom_sonos', room='BEDROOM', group_vol='false', has_tv='false'),
+              player='media_player.bedroom_sonos', room='BEDROOM', group_vol='false', has_tv='false', pick_more='false'),
 }
 old = open('rotary-display-1.yaml').read().split('\n')
 def idx(pred, start=0):
@@ -106,6 +106,34 @@ number = number.replace('number:\n', '''number:
       then: [{script.execute: apply_offset}]
 ''', 1)
 
+# pick-to-play: three little LPs (vinyl drawn with LVGL shapes, cover art as the label)
+def lp(pid, x, d, sc, opa, which, shadow):
+    I = '                    '
+    rings = [d - 10 - 12 * k for k in range(8) if d - 10 - 12 * k > d * 0.6]
+    out = [f"{I}- obj:", f"{I}    id: {pid}", f"{I}    align: CENTER", f"{I}    x: {x}", f"{I}    y: 4",
+           f"{I}    width: {d}", f"{I}    height: {d}", f"{I}    radius: {d // 2}", f"{I}    bg_color: 0x0B0B0C",
+           f"{I}    bg_opa: COVER", f"{I}    border_width: 1", f"{I}    border_color: 0x34343A", f"{I}    pad_all: 0",
+           f"{I}    scrollable: false", f"{I}    opa: {opa}"]
+    if shadow:
+        out += [f"{I}    shadow_width: 34", f"{I}    shadow_color: 0x000000", f"{I}    shadow_opa: 55%", f"{I}    shadow_ofs_y: 6"]
+    out += [f"{I}    on_click: [{{script.execute: {{id: pick_tap, which: {which}}}}}]", f"{I}    widgets:"]
+    for r in rings:
+        out.append(f"{I}      - obj: {{align: CENTER, width: {r}, height: {r}, radius: {r // 2}, bg_opa: 0, border_width: 1, border_color: 0xFFFFFF, border_opa: 7%, pad_all: 0, clickable: false, scrollable: false}}")
+    w = int(d * 0.16)
+    for a0 in (205, 25):   # soft sheen across the grooves
+        out.append(f"{I}      - arc: {{align: CENTER, width: {d - 8}, height: {d - 8}, start_angle: {a0}, end_angle: {a0 + 40}, value: 0, adjustable: false, clickable: false, arc_width: {w}, arc_color: 0xFFFFFF, arc_opa: 6%, arc_rounded: false, indicator: {{arc_opa: 0}}, knob: {{bg_opa: 0}}}}")
+    out.append(f"{I}      - image: {{id: {pid}_cv, src: cv_pdm_london, align: CENTER, scale: {sc}, clickable: false}}")
+    h = max(4, int(d * 0.035)) // 2 * 2
+    out.append(f"{I}      - obj: {{align: CENTER, width: {h}, height: {h}, radius: {h // 2}, bg_color: 0x0B0B0C, border_width: 1, border_color: 0x55555C, pad_all: 0, clickable: false}}")
+    return '\n'.join(out)
+
+PICKER = '\n'.join([
+    '              - obj:', '                  id: pk_grp', '                  hidden: true', '                  align: CENTER',
+    '                  width: 480', '                  height: 480', '                  bg_opa: 0', '                  border_width: 0',
+    '                  pad_all: 0', '                  scrollable: false', '                  clickable: false', '                  widgets:',
+    lp('pk_l', -152, 108, 0.58, '45%', -1, False), lp('pk_r', 152, 108, 0.58, '45%', 1, False),
+    lp('pk_c', 0, 176, 1.0, '100%', 0, True)])
+
 faces = f"""        # ── BÆO III · Nocturne
         - obj:
             id: grp_noc
@@ -145,6 +173,7 @@ faces = f"""        # ── BÆO III · Nocturne
                     - label: {{id: noc_artist, text: "", width: 320, long_mode: DOT, text_align: CENTER, text_font: hk_16, text_letter_space: 4, text_color: 0xE9EDF2, text_opa: 75%}}
               - label: {{id: noc_num, hidden: true, text: "", align: CENTER, text_font: mr_num, text_color: 0xF6F6F4}}
 """
+faces += '\n' + PICKER
 faces += '\n' + wordmark(122, '0xE9EDF2', '70%', '              ')
 caps = ''.join(dict.fromkeys(" +ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789·:-'&.,!?()/" + "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿßŒœ’…"))
 latin = ''.join(chr(c) for c in range(0x20, 0x7f)) + 'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿßŒœ‘’“”–—·…'
@@ -164,7 +193,7 @@ def build(key):
         head = head.replace(old_s, new_s)
     head = head.replace('substitutions:\n', 'substitutions:\n' + ''.join(
         '  %s: "%s"\n' % (k, d[v]) for k, v in [('player', 'player'), ('room_name', 'room'),
-                                              ('group_vol', 'group_vol'), ('has_tv', 'has_tv')]), 1)
+                                              ('group_vol', 'group_vol'), ('has_tv', 'has_tv'), ('pick_more', 'pick_more')]), 1)
     body = open('tt/body.yaml').read().replace('@@ALARM_SCRIPTS@@', alarm_scripts)
     tail = (open('tt/tail.yaml').read().replace('@@FACES@@', faces).replace('@@CAPS@@', json.dumps(caps, ensure_ascii=False))
             .replace('@@LATIN@@', latin_y).replace('@@ALARM_TEXT_SENSORS@@', alarm_ts).replace('@@TOP_LAYER@@', top_layer))
